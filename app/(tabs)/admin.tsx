@@ -8,6 +8,7 @@ import { AppLayout } from '@/components/AppLayout';
 import { StatsCard } from '@/components/StatsCard';
 import { MenuCard } from '@/components/MenuCard';
 import AdminDashboardDesktop from '@/components/admin/AdminDashboardDesktop';
+import AdminSubscriptionOverview from '@/components/admin/AdminSubscriptionOverview';
 
 export default function AdminDashboard() {
     const router = useRouter();
@@ -48,10 +49,12 @@ export default function AdminDashboard() {
             </View>
 
             <View style={{ paddingHorizontal: 20 }}>
+                <View style={{ marginBottom: 24 }}>
+                    <AdminSubscriptionOverview />
+                </View>
                 <Text style={{ fontSize: 22, fontWeight: '700', color: '#0f172a', marginBottom: 16, letterSpacing: -0.5 }}>
                     {t('management')}
                 </Text>
-                <Text style={{ color: 'red', marginBottom: 10 }}>DEBUG: NEW DASHBOARD FILE</Text>
 
                 <MenuCard
                     icon={Package}

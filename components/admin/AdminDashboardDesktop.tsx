@@ -3,8 +3,9 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-nati
 import { useRouter } from 'expo-router';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { Shield, Users, Building, FileText, Warehouse, CreditCard, Package } from 'lucide-react-native';
+import { Shield, Users, Building, FileText, Warehouse, CreditCard, Package, Sliders } from 'lucide-react-native';
 import { DesktopLayout } from '../DesktopLayout';
+import AdminSubscriptionOverview from './AdminSubscriptionOverview';
 
 export default function AdminDashboardDesktop() {
     const router = useRouter();
@@ -46,6 +47,13 @@ export default function AdminDashboardDesktop() {
             description: 'Depo tanımlarını yönetin'
         },
         {
+            icon: Sliders,
+            label: 'Limit Yönetimi',
+            route: '/admin/limits',
+            color: '#10b981',
+            description: 'Firma abonelik ve kaynak limitlerini yönetin'
+        },
+        {
             icon: FileText,
             label: t('serviceReports'),
             route: '/admin/reports',
@@ -79,6 +87,10 @@ export default function AdminDashboardDesktop() {
                             </View>
                         );
                     })}
+                </View>
+
+                <View style={{ marginBottom: 40 }}>
+                    <AdminSubscriptionOverview />
                 </View>
 
                 <Text style={styles.sectionTitle}>Yönetim Araçları</Text>
