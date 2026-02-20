@@ -1,388 +1,564 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, StatusBar, useWindowDimensions } from 'react-native';
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+    View, Text, StyleSheet, ScrollView, TouchableOpacity,
+    ActivityIndicator, TextInput, Alert, useWindowDimensions
+} from 'react-native';
 import { useRouter } from 'expo-router';
-import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
-import { Building, Users, Calendar, FileText, LogOut, Settings, DollarSign, Package, Warehouse, ArrowLeftRight, ChevronRight, CreditCard } from 'lucide-react-native';
-import { SubscriptionStatus } from '@/components/SubscriptionStatus';
-import SubscriptionLimits from '@/components/company/SubscriptionLimits';
-import { LinearGradient } from 'expo-linear-gradient';
-import CompanyDashboardDesktop from '@/components/company/CompanyDashboardDesktop';
+import {
+    ArrowLeft, Users, Building2, GitBranch, Warehouse,
+    Search, ChevronDown, ChevronUp, Save, RefreshCw
+} from 'lucide-react-native';
 
-export default function CompanyDashboard() {
-  const router = useRouter();
-  const { width } = useWindowDimensions();
-  const isDesktop = width >= 768;
-  const { t } = useLanguage();
-  const { profile, signOut } = useAuth();
-  const [stats, setStats] = useState({
-    operators: 0,
-    customers: 0,
-    activeJobs: 0,
-  });
+interface SubscriptionPlan {
+    id: string;
+    name: string;
+    billing_period: string;
+    price_weekly: number;
+    price_monthly: number;
+    price_yearly: number;
+    max_operators: number;
+    max_customers: number;
+    max_branches: number;
+    max_warehouses: number;
+}
 
-  useEffect(() => {
-    loadStats();
-  }, []);
+interface CompanyLimit {
+    subId: string;
+    companyProfileId: string;
+    companyName: string;
+    email: string;
+    status: string;
+    trialEndsAt: string | null;
+    currentPeriodEnd: string | null;
+    planId: string | null;
+    planName: string | null;
+    planBillingPeriod: string | null;
+    maxOperators: number;
+    maxCustomers: number;
+    maxBranches: number;
+    maxWarehouses: number;
+    overrideOperators: string;
+    overrideCustomers: string;
+    overrideBranches: string;
+    overrideWarehouses: string;
+    currentOperators: number;
+    currentCustomers: number;
+    currentBranches: number;
+    currentWarehouses: number;
+}
 
-  const loadStats = async () => {
-    try {
-      const { data: companyData } = await supabase
-        .from('companies')
-        .select('id')
-        .eq('owner_id', profile?.id)
-        .maybeSingle();
+const TRIAL_DEFAULTS = { max_operators: 1, max_customers: 3, max_branches: 3, max_warehouses: 2 };
 
-      if (!companyData) {
-        console.log('No company found for user:', profile?.id);
-        return;
-      }
+const STATUS_COLORS: Record<string, string> = {
+    active: '#10b981',
+    trial: '#f59e0b',
+    expired: '#ef4444',
+    cancelled: '#94a3b8',
+};
 
-      const { count: operatorsCount } = await supabase
-        .from('operators')
-        .select('*', { count: 'exact', head: true })
-        .eq('company_id', companyData.id);
+const STATUS_LABELS: Record<string, string> = {
+    active: 'Aktif',
+    trial: 'Deneme',
+    expired: 'Süresi Doldu',
+    cancelled: 'İptal',
+};
 
-      const { count: customersCount } = await supabase
-        .from('customers')
-        .select('*', { count: 'exact', head: true })
-        .eq('created_by_company_id', companyData.id);
+export default function AdminLimitsPage() {
+    const router = useRouter();
+    const { profile } = useAuth();
+    const { width } = useWindowDimensions();
 
-      const { count: activeJobsCount } = await supabase
-        .from('service_requests')
-        .select('*', { count: 'exact', head: true })
-        .eq('company_id', companyData.id)
-        .in('status', ['pending', 'assigned', 'in_progress']);
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState<string | null>(null);
+    const [companies, setCompanies] = useState<CompanyLimit[]>([]);
+    const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+    const [search, setSearch] = useState('');
+    const [expanded, setExpanded] = useState<string | null>(null);
 
-      setStats({
-        operators: operatorsCount || 0,
-        customers: customersCount || 0,
-        activeJobs: activeJobsCount || 0,
-      });
-    } catch (error) {
-      console.error('Error loading stats:', error);
-    }
-  };
+    useEffect(() => {
+        if (profile?.role !== 'admin') { router.replace('/'); return; }
+        loadData();
+    }, [profile]);
 
-  const handleLogout = async () => {
-    await signOut();
-    router.replace('/welcome');
-  };
+    const loadData = useCallback(async () => {
+        setLoading(true);
+        try {
+            // 1) Planları çek (plan seçici için)
+            const plansRes = await supabase
+                .from('subscription_plans')
+                .select('id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses')
+                .eq('is_active', true)
+                .order('display_order');
 
-  const menuItems = [
-    { icon: CreditCard, label: 'Abonelik Planları', route: '/company/subscription-plans', color: '#7c3aed', gradient: ['#7c3aed', '#6d28d9'] },
-    { icon: Users, label: t('manageOperators'), route: '/company/operators', color: '#10b981', gradient: ['#10b981', '#059669'] },
-    { icon: Building, label: t('manageCustomers'), route: '/company/customers', color: '#3b82f6', gradient: ['#3b82f6', '#2563eb'] },
-    { icon: Building, label: t('manageBranches'), route: '/company/manage-branches', color: '#8b5cf6', gradient: ['#8b5cf6', '#7c3aed'] },
-    { icon: Settings, label: t('companyDefinitions'), route: '/company/definitions', color: '#64748b', gradient: ['#64748b', '#475569'] },
-    { icon: Calendar, label: t('companySettings'), route: '/company/settings', color: '#f59e0b', gradient: ['#f59e0b', '#d97706'] },
-    { icon: FileText, label: 'Ziyaretler ve Raporlar', route: '/company/visits', color: '#06b6d4', gradient: ['#06b6d4', '#0891b2'] },
-    { icon: DollarSign, label: 'Ciro Raporları', route: '/company/revenue-reports', color: '#10b981', gradient: ['#10b981', '#059669'] },
-    { icon: Package, label: 'Ücretli Ürünler', route: '/company/paid-products', color: '#8b5cf6', gradient: ['#8b5cf6', '#7c3aed'] },
-    { icon: DollarSign, label: 'Müşteri Fiyatlandırma', route: '/company/pricing', color: '#14b8a6', gradient: ['#14b8a6', '#0d9488'] },
-    { icon: Warehouse, label: 'Ana Depo Yönetimi', route: '/company/warehouse', color: '#f97316', gradient: ['#f97316', '#ea580c'] },
-    { icon: ArrowLeftRight, label: 'Transfer Yönetimi', route: '/company/transfer-management', color: '#06b6d4', gradient: ['#06b6d4', '#0891b2'] },
-  ];
+            if (plansRes.error) console.error('Planları çekerken hata:', plansRes.error);
+            const planList: SubscriptionPlan[] = plansRes.data || [];
+            setPlans(planList);
+
+            // 2) admin_company_stats view'ından tüm verileri tek sorguda çek
+            const statsRes = await supabase
+                .from('admin_company_stats')
+                .select('*');
+
+            if (statsRes.error) {
+                console.error('Stats view hatası:', statsRes.error);
+                Alert.alert('Veri Hatası', statsRes.error.message);
+                setLoading(false);
+                return;
+            }
+
+            const rows = statsRes.data || [];
+
+            const result: CompanyLimit[] = rows.map((r: any) => ({
+                subId:              r.subscription_id,
+                companyProfileId:   r.owner_profile_id,
+                companyName:        r.company_name || 'İsimsiz Firma',
+                email:              r.owner_email  || '—',
+                status:             r.subscription_status,
+                trialEndsAt:        r.trial_ends_at,
+                currentPeriodEnd:   r.current_period_end,
+                planId:             r.plan_id,
+                planName:           r.plan_name,
+                planBillingPeriod:  r.plan_billing_period,
+                maxOperators:       r.max_operators,
+                maxCustomers:       r.max_customers,
+                maxBranches:        r.max_branches,
+                maxWarehouses:      r.max_warehouses,
+                overrideOperators:  '',
+                overrideCustomers:  '',
+                overrideBranches:   '',
+                overrideWarehouses: '',
+                currentOperators:   r.current_operators,
+                currentCustomers:   r.current_customers,
+                currentBranches:    r.current_branches,
+                currentWarehouses:  r.current_warehouses,
+            }));
+
+            setCompanies(result);
+        } catch (e: any) {
+            console.error('Admin limits load error:', e);
+            Alert.alert('Hata', 'Beklenmeyen bir hata oluştu: ' + e.message);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+                    overrideWarehouses: s.max_warehouses?.toString() || '',
+                    currentOperators,
+                    currentCustomers,
+                    currentBranches,
+                    currentWarehouses,
+                };
+            });
 
 
-  if (isDesktop) {
-    return <CompanyDashboardDesktop />;
-  }
 
-  return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" />
+            setCompanies(result);
+        } catch (e: any) {
+            console.error('Admin limits load error:', e);
+            Alert.alert('Hata', 'Beklenmeyen bir hata oluştu: ' + e.message);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
 
-      {/* Modern Header with Gradient */}
-      <LinearGradient
-        colors={['#10b981', '#059669', '#047857']}
-        style={styles.header}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-      >
-        <View style={styles.headerContent}>
-          <View style={styles.headerInfo}>
-            <Text style={styles.greeting}>{t('welcome')}</Text>
-            <Text style={styles.name}>{profile?.full_name}</Text>
-            <View style={styles.companyBadge}>
-              <Building size={12} color="#10b981" />
-              <Text style={styles.companyName}>{profile?.company_name || t('company')}</Text>
+    const buildCountMap = (ids: string[]): Record<string, number> => {
+        const map: Record<string, number> = {};
+        ids.forEach(id => { if (id) map[id] = (map[id] || 0) + 1; });
+        return map;
+    };
+
+    const computePeriodEnd = (billingPeriod: string | null): string => {
+        const now = new Date();
+        switch (billingPeriod) {
+            case 'weekly': now.setDate(now.getDate() + 7); break;
+            case 'yearly': now.setFullYear(now.getFullYear() + 1); break;
+            case 'trial': now.setDate(now.getDate() + 7); break;
+            default: now.setMonth(now.getMonth() + 1);
+        }
+        return now.toISOString();
+    };
+
+    const handleSave = async (company: CompanyLimit) => {
+        setSaving(company.subId);
+        try {
+            const selectedPlan = plans.find(p => p.id === company.planId);
+            const newPeriodEnd = selectedPlan ? computePeriodEnd(selectedPlan.billing_period) : null;
+
+            const { error } = await supabase
+                .from('subscriptions')
+                .update({
+                    plan_id: company.planId || null,
+                    max_operators: company.overrideOperators ? parseInt(company.overrideOperators) : null,
+                    max_customers: company.overrideCustomers ? parseInt(company.overrideCustomers) : null,
+                    max_branches: company.overrideBranches ? parseInt(company.overrideBranches) : null,
+                    max_warehouses: company.overrideWarehouses ? parseInt(company.overrideWarehouses) : null,
+                    current_period_end: newPeriodEnd,
+                    status: company.planId ? 'active' : company.status,
+                    updated_at: new Date().toISOString(),
+                })
+                .eq('id', company.subId);
+
+            if (error) throw error;
+            Alert.alert('Başarılı', `${company.companyName} aboneliği güncellendi`);
+            loadData();
+        } catch (e: any) {
+            Alert.alert('Hata', e.message);
+        } finally {
+            setSaving(null);
+        }
+    };
+
+    const updateField = (subId: string, field: keyof CompanyLimit, value: string) => {
+        setCompanies(prev => prev.map(c => c.subId === subId ? { ...c, [field]: value } : c));
+    };
+
+    const filtered = companies.filter(c =>
+        c.companyName.toLowerCase().includes(search.toLowerCase()) ||
+        c.email.toLowerCase().includes(search.toLowerCase())
+    );
+
+    if (loading) {
+        return (
+            <View style={styles.loadingBox}>
+                <ActivityIndicator size="large" color="#10b981" />
             </View>
-          </View>
-          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-            <LogOut size={20} color="#ef4444" />
-          </TouchableOpacity>
-        </View>
-      </LinearGradient>
+        );
+    }
 
-      <ScrollView
-        style={styles.content}
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
-        <SubscriptionStatus />
-        <View style={styles.limitsWrapper}>
-          <SubscriptionLimits />
-        </View>
-
-        {/* Modern Stats Cards */}
-        <View style={styles.statsContainer}>
-          <View style={styles.statCard}>
-            <LinearGradient
-              colors={['#10b981', '#059669']}
-              style={styles.statGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-            >
-              <View style={styles.statIconContainer}>
-                <Users size={24} color="#fff" />
-              </View>
-              <Text style={styles.statNumber}>{stats.operators}</Text>
-              <Text style={styles.statLabel}>{t('operators')}</Text>
-            </LinearGradient>
-          </View>
-
-          <View style={styles.statCard}>
-            <LinearGradient
-              colors={['#3b82f6', '#2563eb']}
-              style={styles.statGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-            >
-              <View style={styles.statIconContainer}>
-                <Calendar size={24} color="#fff" />
-              </View>
-              <Text style={styles.statNumber}>{stats.activeJobs}</Text>
-              <Text style={styles.statLabel}>{t('activeJobs')}</Text>
-            </LinearGradient>
-          </View>
-
-          <View style={styles.statCard}>
-            <LinearGradient
-              colors={['#f59e0b', '#d97706']}
-              style={styles.statGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-            >
-              <View style={styles.statIconContainer}>
-                <Building size={24} color="#fff" />
-              </View>
-              <Text style={styles.statNumber}>{stats.customers}</Text>
-              <Text style={styles.statLabel}>{t('customers')}</Text>
-            </LinearGradient>
-          </View>
-        </View>
-
-        {/* Modern Menu Grid */}
-        <View style={styles.menuContainer}>
-          <Text style={styles.sectionTitle}>{t('dashboard')}</Text>
-
-          <View style={styles.menuGrid}>
-            {menuItems.map((item, index) => {
-              const Icon = item.icon;
-              return (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.menuCard}
-                  onPress={() => router.push(item.route as any)}
-                  activeOpacity={0.7}
-                >
-                  <LinearGradient
-                    colors={item.gradient as any}
-                    style={styles.menuIconContainer}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                  >
-                    <Icon size={22} color="#fff" />
-                  </LinearGradient>
-                  <Text style={styles.menuLabel} numberOfLines={2}>
-                    {item.label}
-                  </Text>
-                  <View style={styles.menuArrow}>
-                    <ChevronRight size={16} color="#94a3b8" />
-                  </View>
+    return (
+        <View style={styles.root}>
+            <View style={styles.header}>
+                <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+                    <ArrowLeft size={22} color="#fff" />
                 </TouchableOpacity>
-              );
-            })}
-          </View>
+                <Text style={styles.headerTitle}>Limit Yönetimi</Text>
+                <TouchableOpacity style={styles.backBtn} onPress={loadData}>
+                    <RefreshCw size={18} color="#fff" />
+                </TouchableOpacity>
+            </View>
+
+            <View style={styles.searchBar}>
+                <Search size={16} color="#94a3b8" />
+                <TextInput
+                    style={styles.searchInput}
+                    placeholder="Firma ara..."
+                    value={search}
+                    onChangeText={setSearch}
+                    placeholderTextColor="#94a3b8"
+                />
+            </View>
+
+            <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
+                <View style={styles.statsRow}>
+                    <View style={styles.statBox}>
+                        <Text style={styles.statNum}>{companies.length}</Text>
+                        <Text style={styles.statLabel}>Toplam Firma</Text>
+                    </View>
+                    <View style={styles.statBox}>
+                        <Text style={[styles.statNum, { color: '#10b981' }]}>
+                            {companies.filter(c => c.status === 'active').length}
+                        </Text>
+                        <Text style={styles.statLabel}>Aktif</Text>
+                    </View>
+                    <View style={styles.statBox}>
+                        <Text style={[styles.statNum, { color: '#f59e0b' }]}>
+                            {companies.filter(c => c.status === 'trial').length}
+                        </Text>
+                        <Text style={styles.statLabel}>Deneme</Text>
+                    </View>
+                    <View style={styles.statBox}>
+                        <Text style={[styles.statNum, { color: '#ef4444' }]}>
+                            {companies.filter(c => c.status === 'expired').length}
+                        </Text>
+                        <Text style={styles.statLabel}>Doldu</Text>
+                    </View>
+                </View>
+
+                {filtered.map(company => {
+                    const isOpen = expanded === company.subId;
+                    const statusColor = STATUS_COLORS[company.status] || '#94a3b8';
+
+                    return (
+                        <View key={company.subId} style={styles.card}>
+                            <TouchableOpacity
+                                style={styles.cardHeader}
+                                onPress={() => setExpanded(isOpen ? null : company.subId)}
+                                activeOpacity={0.7}
+                            >
+                                <View style={styles.cardHeaderLeft}>
+                                    <Text style={styles.cardName} numberOfLines={1}>{company.companyName}</Text>
+                                    <Text style={styles.cardEmail} numberOfLines={1}>{company.email}</Text>
+                                    <View style={styles.badgeRow}>
+                                        <View style={[styles.statusBadge, { backgroundColor: statusColor + '20' }]}>
+                                            <Text style={[styles.statusBadgeText, { color: statusColor }]}>
+                                                {STATUS_LABELS[company.status] || company.status}
+                                            </Text>
+                                        </View>
+                                        {company.planName && (
+                                            <View style={styles.planBadge}>
+                                                <Text style={styles.planBadgeText}>
+                                                    {company.planName}
+                                                    {company.planBillingPeriod === 'weekly' ? ' · Haftalık' : company.planBillingPeriod === 'yearly' ? ' · Yıllık' : company.planBillingPeriod === 'monthly' ? ' · Aylık' : ''}
+                                                </Text>
+                                            </View>
+                                        )}
+                                        {company.currentPeriodEnd && (
+                                            <View style={styles.dateBadge}>
+                                                <Text style={styles.dateBadgeText}>
+                                                    Bitiş: {new Date(company.currentPeriodEnd).toLocaleDateString('tr-TR')}
+                                                </Text>
+                                            </View>
+                                        )}
+                                    </View>
+                                </View>
+                                <View style={styles.cardHeaderRight}>
+                                    <View style={styles.miniLimits}>
+                                        <Text style={styles.miniLimit}>{company.currentOperators}/{company.maxOperators}</Text>
+                                        <Text style={styles.miniLimitLabel}>Op</Text>
+                                    </View>
+                                    <View style={styles.miniLimits}>
+                                        <Text style={styles.miniLimit}>{company.currentCustomers}/{company.maxCustomers}</Text>
+                                        <Text style={styles.miniLimitLabel}>Müş</Text>
+                                    </View>
+                                    {isOpen
+                                        ? <ChevronUp size={18} color="#94a3b8" />
+                                        : <ChevronDown size={18} color="#94a3b8" />
+                                    }
+                                </View>
+                            </TouchableOpacity>
+
+                            {isOpen && (
+                                <View style={styles.cardBody}>
+                                    <Text style={styles.sectionTitle}>Plan Seç</Text>
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.planScroll}>
+                                        <TouchableOpacity
+                                            style={[styles.planChip, !company.planId && styles.planChipActive]}
+                                            onPress={() => updateField(company.subId, 'planId', '')}
+                                        >
+                                            <Text style={[styles.planChipText, !company.planId && styles.planChipTextActive]}>
+                                                Deneme
+                                            </Text>
+                                            <Text style={[styles.planChipSub, !company.planId && { color: '#fff' }]}>
+                                                7 Gün
+                                            </Text>
+                                        </TouchableOpacity>
+                                        {plans.map(p => (
+                                            <TouchableOpacity
+                                                key={p.id}
+                                                style={[styles.planChip, company.planId === p.id && styles.planChipActive]}
+                                                onPress={() => updateField(company.subId, 'planId', p.id)}
+                                            >
+                                                <Text style={[styles.planChipText, company.planId === p.id && styles.planChipTextActive]}>
+                                                    {p.name}
+                                                </Text>
+                                                <Text style={[styles.planChipSub, company.planId === p.id && { color: '#fff' }]}>
+                                                    {p.billing_period === 'weekly'
+                                                        ? `${p.price_weekly.toFixed(0)}₺/Hf`
+                                                        : p.billing_period === 'yearly'
+                                                        ? `${p.price_yearly.toFixed(0)}₺/Yıl`
+                                                        : `${p.price_monthly.toFixed(0)}₺/Ay`}
+                                                </Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </ScrollView>
+
+                                    {company.planId && (() => {
+                                        const selectedPlan = plans.find(p => p.id === company.planId);
+                                        if (!selectedPlan) return null;
+                                        return (
+                                            <View style={styles.planPreviewBox}>
+                                                <Text style={styles.planPreviewTitle}>
+                                                    {selectedPlan.name} — {selectedPlan.billing_period === 'weekly' ? 'Haftalık (7 gün)' : selectedPlan.billing_period === 'yearly' ? 'Yıllık' : 'Aylık'}
+                                                </Text>
+                                                <View style={styles.planPreviewLimits}>
+                                                    {[
+                                                        { label: 'Operatör', value: selectedPlan.max_operators },
+                                                        { label: 'Müşteri', value: selectedPlan.max_customers },
+                                                        { label: 'Şube', value: selectedPlan.max_branches },
+                                                        { label: 'Depo', value: selectedPlan.max_warehouses },
+                                                    ].map(item => (
+                                                        <View key={item.label} style={styles.planPreviewChip}>
+                                                            <Text style={styles.planPreviewNum}>{item.value}</Text>
+                                                            <Text style={styles.planPreviewLabel}>{item.label}</Text>
+                                                        </View>
+                                                    ))}
+                                                </View>
+                                            </View>
+                                        );
+                                    })()}
+
+                                    <Text style={styles.sectionTitle}>Özel Limitler <Text style={styles.sectionHint}>(boş = plan/deneme varsayılanı)</Text></Text>
+
+                                    <View style={styles.limitsGrid}>
+                                        {[
+                                            { field: 'overrideOperators' as const, label: 'Operatör', icon: Users, current: company.currentOperators, max: company.maxOperators, color: '#10b981' },
+                                            { field: 'overrideCustomers' as const, label: 'Müşteri', icon: Building2, current: company.currentCustomers, max: company.maxCustomers, color: '#3b82f6' },
+                                            { field: 'overrideBranches' as const, label: 'Şube', icon: GitBranch, current: company.currentBranches, max: company.maxBranches, color: '#f59e0b' },
+                                            { field: 'overrideWarehouses' as const, label: 'Depo', icon: Warehouse, current: company.currentWarehouses, max: company.maxWarehouses, color: '#f97316' },
+                                        ].map(item => {
+                                            const Icon = item.icon;
+                                            const pct = item.max > 0 ? Math.min((item.current / item.max) * 100, 100) : 0;
+                                            const barColor = pct >= 100 ? '#ef4444' : pct >= 80 ? '#f59e0b' : item.color;
+                                            return (
+                                                <View key={item.field} style={styles.limitCard}>
+                                                    <View style={styles.limitCardTop}>
+                                                        <View style={[styles.limitIcon, { backgroundColor: item.color + '15' }]}>
+                                                            <Icon size={14} color={item.color} />
+                                                        </View>
+                                                        <Text style={styles.limitLabel}>{item.label}</Text>
+                                                        <Text style={[styles.limitCount, pct >= 100 && { color: '#ef4444' }]}>
+                                                            {item.current}/{item.max}
+                                                        </Text>
+                                                    </View>
+                                                    <View style={styles.barTrack}>
+                                                        <View style={[styles.barFill, { width: `${pct}%` as any, backgroundColor: barColor }]} />
+                                                    </View>
+                                                    <TextInput
+                                                        style={styles.limitInput}
+                                                        value={(company as any)[item.field]}
+                                                        onChangeText={v => updateField(company.subId, item.field, v)}
+                                                        keyboardType="numeric"
+                                                        placeholder={`Limit (şu an: ${item.max})`}
+                                                        placeholderTextColor="#94a3b8"
+                                                    />
+                                                </View>
+                                            );
+                                        })}
+                                    </View>
+
+                                    <TouchableOpacity
+                                        style={[styles.saveBtn, saving === company.subId && styles.saveBtnDisabled]}
+                                        onPress={() => handleSave(company)}
+                                        disabled={saving === company.subId}
+                                    >
+                                        {saving === company.subId
+                                            ? <ActivityIndicator size="small" color="#fff" />
+                                            : <>
+                                                <Save size={16} color="#fff" />
+                                                <Text style={styles.saveBtnText}>Kaydet</Text>
+                                            </>
+                                        }
+                                    </TouchableOpacity>
+                                </View>
+                            )}
+                        </View>
+                    );
+                })}
+
+                {filtered.length === 0 && (
+                    <View style={styles.emptyBox}>
+                        <Text style={styles.emptyText}>Firma bulunamadı</Text>
+                    </View>
+                )}
+
+                <View style={{ height: 48 }} />
+            </ScrollView>
         </View>
-      </ScrollView>
-    </View>
-  );
+    );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  header: {
-    paddingTop: 60, // Increased from 50
-    paddingBottom: 24,
-    paddingHorizontal: 20,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2, // Increased from 0.15
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  headerContent: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center', // Changed from 'flex-start'
-  },
-  headerInfo: {
-    flex: 1,
-  },
-  greeting: {
-    fontSize: 14,
-    color: '#d1fae5',
-    fontWeight: '500',
-    letterSpacing: 0.5,
-  },
-  name: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#fff',
-    marginTop: 4,
-    letterSpacing: -0.5,
-  },
-  companyBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginTop: 12,
-    alignSelf: 'flex-start',
-    gap: 6,
-  },
-  companyName: {
-    fontSize: 13,
-    color: '#047857',
-    fontWeight: '600',
-  },
-  logoutButton: {
-    width: 50, // Increased from 44
-    height: 50, // Increased from 44
-    borderRadius: 25, // Increased from 22
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 }, // Adjusted shadow
-    shadowOpacity: 0.15, // Increased from 0.1
-    shadowRadius: 6, // Increased from 4
-    elevation: 4, // Increased from 3
-  },
-  content: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: 24,
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginTop: 20,
-    marginBottom: 24,
-    gap: 12,
-  },
-  statCard: {
-    flex: 1,
-    borderRadius: 20, // Increased from 16
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  statGradient: {
-    padding: 16,
-    alignItems: 'center',
-  },
-  statIconContainer: {
-    width: 56, // Increased from 48
-    height: 56, // Increased from 48
-    borderRadius: 28, // Increased from 24
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  statNumber: {
-    fontSize: 28, // Increased from 24
-    fontWeight: '700',
-    color: '#fff',
-    marginTop: 4,
-  },
-  statLabel: {
-    fontSize: 11,
-    color: '#fff',
-    marginTop: 4,
-    textAlign: 'center',
-    opacity: 0.9,
-    fontWeight: '500',
-  },
-  limitsWrapper: {
-    paddingHorizontal: 20,
-    marginBottom: 4,
-  },
-  menuContainer: {
-    paddingHorizontal: 20,
-  },
-  sectionTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#0f172a',
-    marginBottom: 16,
-    letterSpacing: -0.5,
-  },
-  menuGrid: {
-    gap: 12,
-  },
-  menuCard: {
-    backgroundColor: '#fff',
-    borderRadius: 20, // Increased from 16
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-    borderWidth: 1,
-    borderColor: '#f1f5f9',
-  },
-  menuIconContainer: {
-    width: 56, // Increased from 48
-    height: 56, // Increased from 48
-    borderRadius: 16, // Increased from 12
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 14,
-  },
-  menuLabel: {
-    flex: 1,
-    fontSize: 15,
-    color: '#1e293b',
-    fontWeight: '600',
-    lineHeight: 20,
-    marginRight: 8, // Added margin to prevent text from touching arrow
-  },
-  menuArrow: {
-    width: 32, // Increased from 28
-    height: 32, // Increased from 28
-    borderRadius: 16, // Increased from 14
-    backgroundColor: '#f1f5f9',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+    root: { flex: 1, backgroundColor: '#f8fafc' },
+    loadingBox: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    header: {
+        backgroundColor: '#10b981',
+        paddingTop: 52, paddingBottom: 16, paddingHorizontal: 16,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    },
+    backBtn: { width: 38, height: 38, justifyContent: 'center', alignItems: 'center' },
+    headerTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
+    searchBar: {
+        flexDirection: 'row', alignItems: 'center', gap: 10,
+        backgroundColor: '#fff', marginHorizontal: 16, marginTop: 14, marginBottom: 4,
+        paddingHorizontal: 14, paddingVertical: 10,
+        borderRadius: 12, borderWidth: 1, borderColor: '#e2e8f0',
+    },
+    searchInput: { flex: 1, fontSize: 14, color: '#1e293b' },
+    scroll: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
+    statsRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+    statBox: {
+        flex: 1, backgroundColor: '#fff', borderRadius: 12, padding: 12, alignItems: 'center',
+        borderWidth: 1, borderColor: '#e2e8f0',
+    },
+    statNum: { fontSize: 20, fontWeight: '800', color: '#1e293b' },
+    statLabel: { fontSize: 11, color: '#94a3b8', marginTop: 2 },
+    card: {
+        backgroundColor: '#fff', borderRadius: 14, marginBottom: 12,
+        borderWidth: 1, borderColor: '#e2e8f0',
+        shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
+        overflow: 'hidden',
+    },
+    cardHeader: {
+        flexDirection: 'row', alignItems: 'center',
+        padding: 14, gap: 10,
+    },
+    cardHeaderLeft: { flex: 1 },
+    cardName: { fontSize: 15, fontWeight: '700', color: '#1e293b', marginBottom: 2 },
+    cardEmail: { fontSize: 12, color: '#94a3b8', marginBottom: 6 },
+    badgeRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+    statusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+    statusBadgeText: { fontSize: 11, fontWeight: '700' },
+    planBadge: { backgroundColor: '#f0fdf4', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#bbf7d0' },
+    planBadgeText: { fontSize: 11, fontWeight: '600', color: '#15803d' },
+    dateBadge: { backgroundColor: '#f0f9ff', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#bae6fd' },
+    dateBadgeText: { fontSize: 11, fontWeight: '600', color: '#0369a1' },
+    cardHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    miniLimits: { alignItems: 'center' },
+    miniLimit: { fontSize: 13, fontWeight: '700', color: '#334155' },
+    miniLimitLabel: { fontSize: 10, color: '#94a3b8' },
+    cardBody: {
+        borderTopWidth: 1, borderTopColor: '#f1f5f9',
+        padding: 14, gap: 12,
+    },
+    sectionTitle: { fontSize: 13, fontWeight: '700', color: '#374151' },
+    sectionHint: { fontSize: 11, fontWeight: '400', color: '#94a3b8' },
+    planScroll: { marginBottom: 4 },
+    planChip: {
+        paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, marginRight: 8,
+        borderWidth: 1.5, borderColor: '#e2e8f0', backgroundColor: '#fff',
+    },
+    planChipActive: { backgroundColor: '#10b981', borderColor: '#10b981' },
+    planChipText: { fontSize: 13, fontWeight: '600', color: '#64748b' },
+    planChipTextActive: { color: '#fff' },
+    planChipSub: { fontSize: 10, color: '#94a3b8', marginTop: 2 },
+    planPreviewBox: {
+        backgroundColor: '#f0fdf4', borderRadius: 10, padding: 10,
+        borderWidth: 1, borderColor: '#bbf7d0', marginBottom: 4,
+    },
+    planPreviewTitle: { fontSize: 12, fontWeight: '700', color: '#15803d', marginBottom: 8 },
+    planPreviewLimits: { flexDirection: 'row', gap: 8 },
+    planPreviewChip: {
+        flex: 1, backgroundColor: '#fff', borderRadius: 8, padding: 6,
+        alignItems: 'center', borderWidth: 1, borderColor: '#bbf7d0',
+    },
+    planPreviewNum: { fontSize: 15, fontWeight: '800', color: '#15803d' },
+    planPreviewLabel: { fontSize: 10, color: '#64748b', marginTop: 1 },
+    limitsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+    limitCard: {
+        width: '47%', backgroundColor: '#f8fafc',
+        borderRadius: 10, padding: 10, gap: 6,
+        borderWidth: 1, borderColor: '#e2e8f0',
+    },
+    limitCardTop: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    limitIcon: { width: 24, height: 24, borderRadius: 6, justifyContent: 'center', alignItems: 'center' },
+    limitLabel: { flex: 1, fontSize: 12, fontWeight: '600', color: '#475569' },
+    limitCount: { fontSize: 12, fontWeight: '700', color: '#334155' },
+    barTrack: { height: 4, backgroundColor: '#e2e8f0', borderRadius: 2, overflow: 'hidden' },
+    barFill: { height: 4, borderRadius: 2 },
+    limitInput: {
+        backgroundColor: '#fff', borderRadius: 7, paddingHorizontal: 10, paddingVertical: 7,
+        fontSize: 13, borderWidth: 1, borderColor: '#e2e8f0', color: '#1e293b',
+    },
+    saveBtn: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+        gap: 8, backgroundColor: '#10b981', borderRadius: 10,
+        paddingVertical: 12, marginTop: 4,
+    },
+    saveBtnDisabled: { backgroundColor: '#6ee7b7' },
+    saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+    emptyBox: { alignItems: 'center', paddingVertical: 48 },
+    emptyText: { fontSize: 14, color: '#94a3b8' },
 });
-
