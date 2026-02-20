@@ -85,135 +85,65 @@ export default function AdminLimitsPage() {
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            // 1) Planları çek
+            // 1) Planları çek (plan seçici için)
             const plansRes = await supabase
                 .from('subscription_plans')
                 .select('id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses')
                 .eq('is_active', true)
                 .order('display_order');
 
+            if (plansRes.error) console.error('Planları çekerken hata:', plansRes.error);
             const planList: SubscriptionPlan[] = plansRes.data || [];
             setPlans(planList);
-            const planMap: Record<string, SubscriptionPlan> = {};
-            planList.forEach(p => { planMap[p.id] = p; });
 
-            // 2) Abonelikleri ve İsim için Profil tablosunu çek
-            const subsRes = await supabase
-                .from('subscriptions')
-                .select(`
-                    id, company_id, status, trial_ends_at, current_period_end, plan_id, max_operators, max_customers, max_branches, max_warehouses,
-                    owner:profiles!subscriptions_company_id_fkey(id, full_name, email, company_name)
-                `)
-                .order('created_at', { ascending: false });
+            // 2) admin_company_stats view'ından tüm verileri tek sorguda çek
+            const statsRes = await supabase
+                .from('admin_company_stats')
+                .select('*');
 
-            if (subsRes.error) {
-                console.error('Abonelikleri çekerken hata:', subsRes.error);
-                Alert.alert('Veri Hatası', 'Abonelik verileri çekilemedi: ' + subsRes.error.message);
+            if (statsRes.error) {
+                console.error('Stats view hatası:', statsRes.error);
+                Alert.alert('Veri Hatası', statsRes.error.message);
                 setLoading(false);
                 return;
             }
 
-            const subs = subsRes.data || [];
-            if (subs.length === 0) {
-                setCompanies([]);
-                setLoading(false);
-                return;
-            }
+            const rows = statsRes.data || [];
 
-            // 3) Profile ID'leri topla ve Gerçek Şirketleri (Companies) bul
-            const profileIds = subs.map((s: any) => s.company_id).filter(Boolean);
-            const safeProfileIds = profileIds.length > 0 ? profileIds : ['00000000-0000-0000-0000-000000000000'];
+            const result: CompanyLimit[] = rows.map((r: any) => ({
+                subId:              r.subscription_id,
+                companyProfileId:   r.owner_profile_id,
+                companyName:        r.company_name || 'İsimsiz Firma',
+                email:              r.owner_email  || '—',
+                status:             r.subscription_status,
+                trialEndsAt:        r.trial_ends_at,
+                currentPeriodEnd:   r.current_period_end,
+                planId:             r.plan_id,
+                planName:           r.plan_name,
+                planBillingPeriod:  r.plan_billing_period,
+                maxOperators:       r.max_operators,
+                maxCustomers:       r.max_customers,
+                maxBranches:        r.max_branches,
+                maxWarehouses:      r.max_warehouses,
+                overrideOperators:  '',
+                overrideCustomers:  '',
+                overrideBranches:   '',
+                overrideWarehouses: '',
+                currentOperators:   r.current_operators,
+                currentCustomers:   r.current_customers,
+                currentBranches:    r.current_branches,
+                currentWarehouses:  r.current_warehouses,
+            }));
 
-            const companiesRes = await supabase
-                .from('companies')
-                .select('id, owner_id, name')
-                .in('owner_id', safeProfileIds);
+            setCompanies(result);
+        } catch (e: any) {
+            console.error('Admin limits load error:', e);
+            Alert.alert('Hata', 'Beklenmeyen bir hata oluştu: ' + e.message);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
 
-            const companyTableMap: Record<string, any> = {};
-            const companyIds: string[] = [];
-            
-            (companiesRes.data || []).forEach((c: any) => {
-                companyTableMap[c.owner_id] = c; // profile_id -> company objesi
-                companyIds.push(c.id);
-            });
-
-            // 4) Limit doluluklarını güvenli ve eksiksiz çekmek için ÇİFT SORGULAMA yapıyoruz
-            // Bazı tablolar profile.id ile, bazıları companies.id ile kayıtlı olabilir. İkisini de çekip toplayacağız.
-            const safeCompanyIds = companyIds.length > 0 ? companyIds : ['00000000-0000-0000-0000-000000000000'];
-
-            const [
-                opComp, opProf,
-                custComp, custProf,
-                branchComp, branchProf,
-                whComp, whProf
-            ] = await Promise.all([
-                supabase.from('operators').select('company_id').in('company_id', safeCompanyIds),
-                supabase.from('operators').select('company_id').in('company_id', safeProfileIds),
-                
-                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeCompanyIds),
-                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeProfileIds),
-                
-                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeCompanyIds),
-                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeProfileIds),
-                
-                supabase.from('warehouses').select('company_id').in('company_id', safeCompanyIds),
-                supabase.from('warehouses').select('company_id').in('company_id', safeProfileIds),
-            ]);
-
-            // Haritalamaları kendi ID türlerine göre ayırıyoruz (Burası kritik!)
-            const opMapComp = buildCountMap((opComp.data || []).map((r: any) => r.company_id));
-            const opMapProf = buildCountMap((opProf.data || []).map((r: any) => r.company_id));
-            
-            const custMapComp = buildCountMap((custComp.data || []).map((r: any) => r.created_by_company_id));
-            const custMapProf = buildCountMap((custProf.data || []).map((r: any) => r.created_by_company_id));
-            
-            const branchMapComp = buildCountMap((branchComp.data || []).map((r: any) => r.created_by_company_id));
-            const branchMapProf = buildCountMap((branchProf.data || []).map((r: any) => r.created_by_company_id));
-            
-            const whMapComp = buildCountMap((whComp.data || []).map((r: any) => r.company_id));
-            const whMapProf = buildCountMap((whProf.data || []).map((r: any) => r.company_id));
-
-            // 5) Verileri Birleştir
-            const result: CompanyLimit[] = subs.map((s: any) => {
-                const owner = Array.isArray(s.owner) ? s.owner[0] : s.owner;
-                const profileId = s.company_id; // Bu Profiles tablosunun ID'sidir
-                const companyData = companyTableMap[profileId]; 
-                const tableId = companyData?.id; // Bu Gerçek Companies tablosunun ID'sidir
-
-                const plan = s.plan_id ? planMap[s.plan_id] : null;
-
-                const effectiveOps = s.max_operators ?? plan?.max_operators ?? TRIAL_DEFAULTS.max_operators;
-                const effectiveCust = s.max_customers ?? plan?.max_customers ?? TRIAL_DEFAULTS.max_customers;
-                const effectiveBranch = s.max_branches ?? plan?.max_branches ?? TRIAL_DEFAULTS.max_branches;
-                const effectiveWh = s.max_warehouses ?? plan?.max_warehouses ?? TRIAL_DEFAULTS.max_warehouses;
-
-                // İsmi sırasıyla Companies tablosundan, yoksa Profiles(company_name), yoksa Profiles(full_name)'den alır.
-                const finalCompanyName = companyData?.name || owner?.company_name || owner?.full_name || 'İsimsiz Firma';
-
-                // DOĞRU EŞLEŞTİRME: tableId olanları Comp haritasından, profileId olanları Prof haritasından çek
-                const currentOperators  = (tableId ? (opMapComp[tableId] || 0) : 0) + (opMapProf[profileId] || 0);
-                const currentCustomers  = (tableId ? (custMapComp[tableId] || 0) : 0) + (custMapProf[profileId] || 0);
-                const currentBranches   = (tableId ? (branchMapComp[tableId] || 0) : 0) + (branchMapProf[profileId] || 0);
-                const currentWarehouses = (tableId ? (whMapComp[tableId] || 0) : 0) + (whMapProf[profileId] || 0);
-
-                return {
-                    subId: s.id,
-                    companyProfileId: profileId || '',
-                    companyName: finalCompanyName,
-                    email: owner?.email || '—',
-                    status: s.status,
-                    trialEndsAt: s.trial_ends_at,
-                    currentPeriodEnd: s.current_period_end,
-                    planId: s.plan_id,
-                    planName: plan?.name || null,
-                    planBillingPeriod: plan?.billing_period || null,
-                    maxOperators: effectiveOps,
-                    maxCustomers: effectiveCust,
-                    maxBranches: effectiveBranch,
-                    maxWarehouses: effectiveWh,
-                    overrideOperators: s.max_operators?.toString() || '',
-                    overrideCustomers: s.max_customers?.toString() || '',
-                    overrideBranches: s.max_branches?.toString() || '',
                     overrideWarehouses: s.max_warehouses?.toString() || '',
                     currentOperators,
                     currentCustomers,
@@ -221,6 +151,8 @@ export default function AdminLimitsPage() {
                     currentWarehouses,
                 };
             });
+
+
 
             setCompanies(result);
         } catch (e: any) {
