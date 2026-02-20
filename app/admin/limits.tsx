@@ -97,15 +97,29 @@ export default function AdminLimitsPage() {
                         id, company_id, status, trial_ends_at, current_period_end,
                         plan_id, max_operators, max_customers, max_branches, max_warehouses,
                         plan:subscription_plans(id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses),
-                        owner:profiles!subscriptions_company_id_fkey(id, full_name, email, company_name)
+                        owner:profiles!company_id(id, full_name, email, company_name)
                     `)
                     .order('created_at', { ascending: false }),
             ]);
+
+            if (plansRes.error) console.error('Planları çekerken hata:', plansRes.error);
+            if (subsRes.error) {
+                console.error('Abonelikleri çekerken hata:', subsRes.error);
+                Alert.alert('Veri Hatası', 'Abonelik verileri çekilemedi: ' + subsRes.error.message);
+                setLoading(false);
+                return;
+            }
 
             const planList: SubscriptionPlan[] = plansRes.data || [];
             setPlans(planList);
 
             const subs = subsRes.data || [];
+
+            if (subs.length === 0) {
+                setCompanies([]);
+                setLoading(false);
+                return;
+            }
 
             const companyIds = subs
                 .map((s: any) => {
@@ -114,19 +128,21 @@ export default function AdminLimitsPage() {
                 })
                 .filter(Boolean);
 
+            const safeCompanyIds = companyIds.length > 0 ? companyIds : ['00000000-0000-0000-0000-000000000000'];
+            const tableIds = await getCompanyTableIds(safeCompanyIds);
+            const safeTableIds = tableIds.length > 0 ? tableIds : ['00000000-0000-0000-0000-000000000000'];
+
             const [opCounts, custCounts, branchCounts, whCounts] = await Promise.all([
-                supabase.from('operators').select('company_id', { count: 'exact' }).in('company_id',
-                    await getCompanyTableIds(companyIds)),
-                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', companyIds),
-                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', companyIds),
-                supabase.from('warehouses').select('company_id').in('company_id',
-                    await getCompanyTableIds(companyIds)),
+                supabase.from('operators').select('company_id', { count: 'exact' }).in('company_id', safeTableIds),
+                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeCompanyIds),
+                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeCompanyIds),
+                supabase.from('warehouses').select('company_id').in('company_id', safeTableIds),
             ]);
 
             const custByOwner = buildCountMap((custCounts.data || []).map((r: any) => r.created_by_company_id));
             const branchByOwner = buildCountMap((branchCounts.data || []).map((r: any) => r.created_by_company_id));
 
-            const companyTableMap = await getCompanyTableMap(companyIds);
+            const companyTableMap = await getCompanyTableMap(safeCompanyIds);
 
             const opByTable = buildCountMap((opCounts.data || []).map((r: any) => r.company_id));
             const whByTable = buildCountMap((whCounts.data || []).map((r: any) => r.company_id));
@@ -144,7 +160,7 @@ export default function AdminLimitsPage() {
                 return {
                     subId: s.id,
                     companyProfileId: owner?.id || '',
-                    companyName: owner?.company_name || owner?.full_name || '—',
+                    companyName: owner?.company_name || owner?.full_name || 'İsimsiz Firma',
                     email: owner?.email || '—',
                     status: s.status,
                     trialEndsAt: s.trial_ends_at,
@@ -168,21 +184,26 @@ export default function AdminLimitsPage() {
             });
 
             setCompanies(result);
-        } catch (e) {
+        } catch (e: any) {
             console.error('Admin limits load error:', e);
+            Alert.alert('Hata', 'Beklenmeyen bir hata oluştu: ' + e.message);
         } finally {
             setLoading(false);
         }
     }, []);
 
     const getCompanyTableIds = async (profileIds: string[]): Promise<string[]> => {
-        if (!profileIds.length) return ['00000000-0000-0000-0000-000000000000'];
-        const { data } = await supabase.from('companies').select('id').in('owner_id', profileIds);
-        return (data || []).map((c: any) => c.id);
+        if (!profileIds || !profileIds.length) return ['00000000-0000-0000-0000-000000000000'];
+        const { data, error } = await supabase.from('companies').select('id').in('owner_id', profileIds);
+        
+        if (error) console.error("Companies fetch error:", error);
+        
+        const ids = (data || []).map((c: any) => c.id);
+        return ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000'];
     };
 
     const getCompanyTableMap = async (profileIds: string[]): Promise<Record<string, string>> => {
-        if (!profileIds.length) return {};
+        if (!profileIds || !profileIds.length) return {};
         const { data } = await supabase.from('companies').select('id, owner_id').in('owner_id', profileIds);
         const map: Record<string, string> = {};
         (data || []).forEach((c: any) => { map[c.owner_id] = c.id; });
