@@ -9,12 +9,13 @@ import {
     Modal,
     Alert,
     ActivityIndicator,
+    Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
-import { ArrowLeft, Search, Edit2, Trash2, Calendar, CheckCircle, XCircle, Plus, Filter, MoreHorizontal, User, Shield, Building, Truck } from 'lucide-react-native';
+import { ArrowLeft, Search, Edit2, Trash2, Calendar, CheckCircle, XCircle, Plus, Filter, MoreHorizontal, User, Shield, Building, Truck, CreditCard } from 'lucide-react-native';
 import { DesktopLayout } from '../DesktopLayout';
 
 interface Profile {
@@ -27,6 +28,19 @@ interface Profile {
     created_at: string;
 }
 
+interface SubscriptionPlan {
+    id: string;
+    name: string;
+    billing_period: string;
+    price_weekly: number;
+    price_monthly: number;
+    price_yearly: number;
+    max_operators: number;
+    max_customers: number;
+    max_branches: number;
+    max_warehouses: number;
+}
+
 interface Subscription {
     id: string;
     company_id: string;
@@ -35,6 +49,11 @@ interface Subscription {
     current_period_start: string;
     current_period_end: string;
     cancel_at_period_end: boolean;
+    plan_id: string | null;
+    max_operators: number | null;
+    max_customers: number | null;
+    max_branches: number | null;
+    max_warehouses: number | null;
 }
 
 export default function AdminUsersDesktop() {
@@ -50,15 +69,52 @@ export default function AdminUsersDesktop() {
     const [subscriptionModalVisible, setSubscriptionModalVisible] = useState(false);
     const [editForm, setEditForm] = useState({ full_name: '', phone: '', email: '' });
     const [subscriptionData, setSubscriptionData] = useState<Subscription | null>(null);
+    const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
     const [subscriptionForm, setSubscriptionForm] = useState({
-        status: 'active',
+        status: 'trial',
         trial_ends_at: '',
         current_period_end: '',
+        plan_id: null as string | null,
+        max_operators: '',
+        max_customers: '',
+        max_branches: '',
+        max_warehouses: '',
     });
+    const [savingSubscription, setSavingSubscription] = useState(false);
 
     useEffect(() => {
         fetchUsers();
+        fetchPlans();
     }, []);
+
+    const fetchPlans = async () => {
+        const { data } = await supabase
+            .from('subscription_plans')
+            .select('id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses')
+            .eq('is_active', true)
+            .eq('is_trial', false)
+            .order('display_order');
+        setPlans(data || []);
+    };
+
+    const computePeriodEnd = (plan: SubscriptionPlan | null): string => {
+        const now = new Date();
+        if (!plan) {
+            now.setDate(now.getDate() + 7);
+            return now.toISOString().split('T')[0];
+        }
+        switch (plan.billing_period) {
+            case 'weekly':
+                now.setDate(now.getDate() + 7);
+                break;
+            case 'yearly':
+                now.setFullYear(now.getFullYear() + 1);
+                break;
+            default:
+                now.setMonth(now.getMonth() + 1);
+        }
+        return now.toISOString().split('T')[0];
+    };
 
     const fetchUsers = async () => {
         try {
@@ -79,27 +135,35 @@ export default function AdminUsersDesktop() {
 
     const fetchSubscription = async (userId: string) => {
         try {
-            const { data: companies } = await supabase
-                .from('companies')
-                .select('id')
-                .eq('owner_id', userId)
-                .single();
+            const { data: subscription } = await supabase
+                .from('subscriptions')
+                .select('*')
+                .eq('company_id', userId)
+                .maybeSingle();
 
-            if (companies) {
-                const { data: subscription } = await supabase
-                    .from('subscriptions')
-                    .select('*')
-                    .eq('company_id', companies.id)
-                    .single();
-
-                setSubscriptionData(subscription);
-                if (subscription) {
-                    setSubscriptionForm({
-                        status: subscription.status,
-                        trial_ends_at: subscription.trial_ends_at?.split('T')[0] || '',
-                        current_period_end: subscription.current_period_end?.split('T')[0] || '',
-                    });
-                }
+            setSubscriptionData(subscription);
+            if (subscription) {
+                setSubscriptionForm({
+                    status: subscription.status,
+                    trial_ends_at: subscription.trial_ends_at?.split('T')[0] || '',
+                    current_period_end: subscription.current_period_end?.split('T')[0] || '',
+                    plan_id: subscription.plan_id || null,
+                    max_operators: subscription.max_operators?.toString() || '',
+                    max_customers: subscription.max_customers?.toString() || '',
+                    max_branches: subscription.max_branches?.toString() || '',
+                    max_warehouses: subscription.max_warehouses?.toString() || '',
+                });
+            } else {
+                setSubscriptionForm({
+                    status: 'trial',
+                    trial_ends_at: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+                    current_period_end: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+                    plan_id: null,
+                    max_operators: '',
+                    max_customers: '',
+                    max_branches: '',
+                    max_warehouses: '',
+                });
             }
         } catch (error: any) {
             console.error('Subscription fetch error:', error);
@@ -145,24 +209,51 @@ export default function AdminUsersDesktop() {
     };
 
     const saveSubscriptionChanges = async () => {
-        if (!subscriptionData) return;
-
+        if (!selectedUser) return;
+        setSavingSubscription(true);
         try {
-            const { error } = await supabase
-                .from('subscriptions')
-                .update({
-                    status: subscriptionForm.status,
-                    trial_ends_at: subscriptionForm.trial_ends_at,
-                    current_period_end: subscriptionForm.current_period_end,
-                })
-                .eq('id', subscriptionData.id);
+            const payload: Record<string, any> = {
+                status: subscriptionForm.status,
+                trial_ends_at: subscriptionForm.trial_ends_at || null,
+                current_period_end: subscriptionForm.current_period_end || null,
+                plan_id: subscriptionForm.plan_id || null,
+                max_operators: subscriptionForm.max_operators ? parseInt(subscriptionForm.max_operators) : null,
+                max_customers: subscriptionForm.max_customers ? parseInt(subscriptionForm.max_customers) : null,
+                max_branches: subscriptionForm.max_branches ? parseInt(subscriptionForm.max_branches) : null,
+                max_warehouses: subscriptionForm.max_warehouses ? parseInt(subscriptionForm.max_warehouses) : null,
+                updated_at: new Date().toISOString(),
+            };
 
-            if (error) throw error;
+            if (subscriptionData) {
+                const { error } = await supabase.from('subscriptions').update(payload).eq('id', subscriptionData.id);
+                if (error) throw error;
+            } else {
+                const { error } = await supabase.from('subscriptions').insert({ ...payload, company_id: selectedUser.id });
+                if (error) throw error;
+            }
 
             Alert.alert('Başarılı', 'Abonelik güncellendi');
             setSubscriptionModalVisible(false);
         } catch (error: any) {
             Alert.alert('Hata', error.message);
+        } finally {
+            setSavingSubscription(false);
+        }
+    };
+
+    const activateTrial = async (user: Profile) => {
+        try {
+            const trialEnd = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+            const { data: existing } = await supabase.from('subscriptions').select('id').eq('company_id', user.id).maybeSingle();
+            if (existing) {
+                await supabase.from('subscriptions').update({ status: 'trial', trial_ends_at: trialEnd, updated_at: new Date().toISOString() }).eq('id', existing.id);
+            } else {
+                await supabase.from('subscriptions').insert({ company_id: user.id, status: 'trial', trial_ends_at: trialEnd });
+            }
+            alert('7 günlük deneme başlatıldı');
+            fetchUsers();
+        } catch (error: any) {
+            alert(error.message);
         }
     };
 
@@ -259,7 +350,7 @@ export default function AdminUsersDesktop() {
                         <Text style={[styles.columnHeader, { flex: 1 }]}>Rol</Text>
                         <Text style={[styles.columnHeader, { flex: 1.5 }]}>İletişim</Text>
                         <Text style={[styles.columnHeader, { flex: 1 }]}>Kayıt Tarihi</Text>
-                        <Text style={[styles.columnHeader, { width: 100, textAlign: 'right' }]}>İşlemler</Text>
+                        <Text style={[styles.columnHeader, { width: 130, textAlign: 'right' }]}>İşlemler</Text>
                     </View>
 
                     <ScrollView style={styles.tableBody} showsVerticalScrollIndicator={false}>
@@ -296,27 +387,36 @@ export default function AdminUsersDesktop() {
                                         <Text style={styles.cellText}>{new Date(user.created_at).toLocaleDateString('tr-TR')}</Text>
                                     </View>
 
-                                    <View style={[styles.cell, { width: 100, flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }]}>
+                                    <View style={[styles.cell, { width: 130, flexDirection: 'row', justifyContent: 'flex-end', gap: 6 }]}>
                                         {user.role === 'company' && (
-                                            <TouchableOpacity
-                                                style={[styles.iconButton, { backgroundColor: '#fff7ed' }]}
-                                                onPress={() => handleManageSubscription(user)}
-                                            >
-                                                <Calendar size={16} color="#f97316" />
-                                            </TouchableOpacity>
+                                            <>
+                                                <TouchableOpacity
+                                                    style={[styles.iconButton, { backgroundColor: '#f0fdf4' }]}
+                                                    onPress={() => activateTrial(user)}
+                                                    title="7 Gün Deneme"
+                                                >
+                                                    <CheckCircle size={15} color="#10b981" />
+                                                </TouchableOpacity>
+                                                <TouchableOpacity
+                                                    style={[styles.iconButton, { backgroundColor: '#fff7ed' }]}
+                                                    onPress={() => handleManageSubscription(user)}
+                                                >
+                                                    <CreditCard size={15} color="#f97316" />
+                                                </TouchableOpacity>
+                                            </>
                                         )}
                                         <TouchableOpacity
                                             style={[styles.iconButton, { backgroundColor: '#eff6ff' }]}
                                             onPress={() => handleEditUser(user)}
                                         >
-                                            <Edit2 size={16} color="#3b82f6" />
+                                            <Edit2 size={15} color="#3b82f6" />
                                         </TouchableOpacity>
                                         {user.role !== 'admin' && (
                                             <TouchableOpacity
                                                 style={[styles.iconButton, { backgroundColor: '#fef2f2' }]}
                                                 onPress={() => deleteUser(user.id, user.email)}
                                             >
-                                                <Trash2 size={16} color="#ef4444" />
+                                                <Trash2 size={15} color="#ef4444" />
                                             </TouchableOpacity>
                                         )}
                                     </View>
@@ -379,62 +479,148 @@ export default function AdminUsersDesktop() {
                 {/* Subscription Modal */}
                 <Modal visible={subscriptionModalVisible} transparent animationType="fade">
                     <View style={styles.modalOverlay}>
-                        <View style={styles.modalContent}>
+                        <View style={[styles.modalContent, { width: 620, maxHeight: '90%' }]}>
                             <View style={styles.modalHeader}>
-                                <Text style={styles.modalTitle}>Abonelik Yönetimi</Text>
+                                <View>
+                                    <Text style={styles.modalTitle}>Abonelik Yönetimi</Text>
+                                    {selectedUser && (
+                                        <Text style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{selectedUser.full_name} — {selectedUser.email}</Text>
+                                    )}
+                                </View>
                                 <TouchableOpacity onPress={() => setSubscriptionModalVisible(false)}>
                                     <XCircle size={24} color="#94a3b8" />
                                 </TouchableOpacity>
                             </View>
 
-                            <View style={styles.modalBody}>
-                                {subscriptionData ? (
-                                    <>
-                                        <Text style={styles.inputLabel}>Durum</Text>
-                                        <View style={styles.statusButtons}>
-                                            {['trial', 'active', 'expired', 'cancelled'].map((status) => (
-                                                <TouchableOpacity
-                                                    key={status}
-                                                    style={[
-                                                        styles.statusButton,
-                                                        subscriptionForm.status === status && styles.statusButtonActive,
-                                                    ]}
-                                                    onPress={() => setSubscriptionForm({ ...subscriptionForm, status })}
-                                                >
-                                                    <Text
-                                                        style={[
-                                                            styles.statusButtonText,
-                                                            subscriptionForm.status === status && styles.statusButtonTextActive,
-                                                        ]}
-                                                    >
-                                                        {status}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            ))}
+                            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+                                <Text style={styles.inputLabel}>Durum</Text>
+                                <View style={styles.statusButtons}>
+                                    {[
+                                        { value: 'trial', label: 'Deneme', color: '#f59e0b' },
+                                        { value: 'active', label: 'Aktif', color: '#10b981' },
+                                        { value: 'expired', label: 'Süresi Doldu', color: '#ef4444' },
+                                        { value: 'cancelled', label: 'İptal', color: '#94a3b8' },
+                                    ].map((s) => (
+                                        <TouchableOpacity
+                                            key={s.value}
+                                            style={[
+                                                styles.statusButton,
+                                                subscriptionForm.status === s.value && { backgroundColor: s.color, borderColor: s.color },
+                                            ]}
+                                            onPress={() => setSubscriptionForm({ ...subscriptionForm, status: s.value })}
+                                        >
+                                            <Text style={[styles.statusButtonText, subscriptionForm.status === s.value && styles.statusButtonTextActive]}>
+                                                {s.label}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </View>
+
+                                <View style={styles.subSection}>
+                                    <Text style={styles.subSectionTitle}>Plan Seç</Text>
+                                    <View style={styles.planGrid}>
+                                        <TouchableOpacity
+                                            style={[styles.planCard, !subscriptionForm.plan_id && styles.planCardActive]}
+                                            onPress={() => {
+                                                const trialEnd = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+                                                setSubscriptionForm({ ...subscriptionForm, plan_id: null, current_period_end: trialEnd, trial_ends_at: trialEnd });
+                                            }}
+                                        >
+                                            <Text style={[styles.planCardName, !subscriptionForm.plan_id && styles.planCardNameActive]}>Deneme</Text>
+                                            <Text style={[styles.planCardPeriod, !subscriptionForm.plan_id && { color: '#fff' }]}>7 Gün Ücretsiz</Text>
+                                        </TouchableOpacity>
+                                        {plans.map(plan => (
+                                            <TouchableOpacity
+                                                key={plan.id}
+                                                style={[styles.planCard, subscriptionForm.plan_id === plan.id && styles.planCardActive]}
+                                                onPress={() => {
+                                                    const endDate = computePeriodEnd(plan);
+                                                    setSubscriptionForm({ ...subscriptionForm, plan_id: plan.id, current_period_end: endDate });
+                                                }}
+                                            >
+                                                <Text style={[styles.planCardName, subscriptionForm.plan_id === plan.id && styles.planCardNameActive]}>{plan.name}</Text>
+                                                <Text style={[styles.planCardPeriod, subscriptionForm.plan_id === plan.id && { color: '#fff' }]}>
+                                                    {plan.billing_period === 'weekly'
+                                                        ? `${plan.price_weekly.toFixed(2)} ₺/Hf`
+                                                        : plan.billing_period === 'yearly'
+                                                        ? `${plan.price_yearly.toFixed(2)} ₺/Yıl`
+                                                        : `${plan.price_monthly.toFixed(2)} ₺/Ay`}
+                                                </Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+
+                                    {subscriptionForm.plan_id && (() => {
+                                        const p = plans.find(pl => pl.id === subscriptionForm.plan_id);
+                                        if (!p) return null;
+                                        return (
+                                            <View style={styles.planLimitsBox}>
+                                                <Text style={styles.planLimitsTitle}>Plan Varsayılan Limitleri</Text>
+                                                <View style={styles.planLimitsRow}>
+                                                    {[
+                                                        { label: 'Operatör', value: p.max_operators },
+                                                        { label: 'Müşteri', value: p.max_customers },
+                                                        { label: 'Şube', value: p.max_branches },
+                                                        { label: 'Depo', value: p.max_warehouses },
+                                                    ].map(item => (
+                                                        <View key={item.label} style={styles.planLimitChip}>
+                                                            <Text style={styles.planLimitNum}>{item.value}</Text>
+                                                            <Text style={styles.planLimitLabel}>{item.label}</Text>
+                                                        </View>
+                                                    ))}
+                                                </View>
+                                            </View>
+                                        );
+                                    })()}
+                                </View>
+
+                                <View style={styles.subSection}>
+                                    <Text style={styles.subSectionTitle}>Tarihler</Text>
+                                    <View style={styles.datesRow}>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.inputLabel}>Deneme Bitiş</Text>
+                                            <TextInput
+                                                style={styles.input}
+                                                value={subscriptionForm.trial_ends_at}
+                                                onChangeText={(t) => setSubscriptionForm({ ...subscriptionForm, trial_ends_at: t })}
+                                                placeholder="YYYY-MM-DD"
+                                            />
                                         </View>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.inputLabel}>Abonelik Bitiş</Text>
+                                            <TextInput
+                                                style={styles.input}
+                                                value={subscriptionForm.current_period_end}
+                                                onChangeText={(t) => setSubscriptionForm({ ...subscriptionForm, current_period_end: t })}
+                                                placeholder="YYYY-MM-DD"
+                                            />
+                                        </View>
+                                    </View>
+                                </View>
 
-                                        <Text style={styles.inputLabel}>Deneme Bitiş Tarihi</Text>
-                                        <TextInput
-                                            style={styles.input}
-                                            value={subscriptionForm.trial_ends_at}
-                                            onChangeText={(text) => setSubscriptionForm({ ...subscriptionForm, trial_ends_at: text })}
-                                            placeholder="YYYY-MM-DD"
-                                        />
-
-                                        <Text style={styles.inputLabel}>Abonelik Bitiş Tarihi</Text>
-                                        <TextInput
-                                            style={styles.input}
-                                            value={subscriptionForm.current_period_end}
-                                            onChangeText={(text) =>
-                                                setSubscriptionForm({ ...subscriptionForm, current_period_end: text })
-                                            }
-                                            placeholder="YYYY-MM-DD"
-                                        />
-                                    </>
-                                ) : (
-                                    <Text style={styles.noSubscriptionText}>Bu kullanıcının aboneliği bulunmuyor</Text>
-                                )}
-                            </View>
+                                <View style={styles.subSection}>
+                                    <Text style={styles.subSectionTitle}>Özel Limitler <Text style={{ fontWeight: '400', color: '#94a3b8', fontSize: 12 }}>(boş = plan varsayılanı)</Text></Text>
+                                    <View style={styles.limitsGrid}>
+                                        {[
+                                            { field: 'max_operators' as const, label: 'Operatör' },
+                                            { field: 'max_customers' as const, label: 'Müşteri' },
+                                            { field: 'max_branches' as const, label: 'Şube' },
+                                            { field: 'max_warehouses' as const, label: 'Depo' },
+                                        ].map(item => (
+                                            <View key={item.field} style={styles.limitInputGroup}>
+                                                <Text style={styles.limitInputLabel}>{item.label}</Text>
+                                                <TextInput
+                                                    style={styles.limitInput}
+                                                    value={subscriptionForm[item.field]}
+                                                    onChangeText={(v) => setSubscriptionForm({ ...subscriptionForm, [item.field]: v })}
+                                                    keyboardType="numeric"
+                                                    placeholder="Varsayılan"
+                                                />
+                                            </View>
+                                        ))}
+                                    </View>
+                                </View>
+                            </ScrollView>
 
                             <View style={styles.modalFooter}>
                                 <TouchableOpacity
@@ -444,10 +630,14 @@ export default function AdminUsersDesktop() {
                                     <Text style={styles.cancelButtonText}>İptal</Text>
                                 </TouchableOpacity>
                                 <TouchableOpacity
-                                    style={[styles.modalButton, styles.saveButton]}
+                                    style={[styles.modalButton, styles.saveButton, savingSubscription && { opacity: 0.7 }]}
                                     onPress={saveSubscriptionChanges}
+                                    disabled={savingSubscription}
                                 >
-                                    <Text style={styles.saveButtonText}>Kaydet</Text>
+                                    {savingSubscription
+                                        ? <ActivityIndicator size="small" color="#fff" />
+                                        : <Text style={styles.saveButtonText}>Kaydet</Text>
+                                    }
                                 </TouchableOpacity>
                             </View>
                         </View>
@@ -702,6 +892,112 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         color: '#94a3b8',
         paddingVertical: 20,
+    },
+    subSection: {
+        marginBottom: 20,
+    },
+    subSectionTitle: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#334155',
+        marginBottom: 10,
+    },
+    planGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+        marginBottom: 10,
+    },
+    planCard: {
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderRadius: 10,
+        borderWidth: 1.5,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#fff',
+        alignItems: 'center',
+        minWidth: 90,
+    },
+    planCardActive: {
+        backgroundColor: '#2563eb',
+        borderColor: '#2563eb',
+    },
+    planCardName: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: '#334155',
+    },
+    planCardNameActive: {
+        color: '#fff',
+    },
+    planCardPeriod: {
+        fontSize: 11,
+        color: '#64748b',
+        marginTop: 2,
+    },
+    planLimitsBox: {
+        backgroundColor: '#f0f9ff',
+        borderRadius: 10,
+        padding: 12,
+        borderWidth: 1,
+        borderColor: '#bae6fd',
+    },
+    planLimitsTitle: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#0369a1',
+        marginBottom: 8,
+    },
+    planLimitsRow: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    planLimitChip: {
+        flex: 1,
+        backgroundColor: '#fff',
+        borderRadius: 8,
+        padding: 8,
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#bae6fd',
+    },
+    planLimitNum: {
+        fontSize: 16,
+        fontWeight: '800',
+        color: '#0369a1',
+    },
+    planLimitLabel: {
+        fontSize: 10,
+        color: '#64748b',
+        marginTop: 2,
+    },
+    datesRow: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    limitsGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 10,
+    },
+    limitInputGroup: {
+        width: '47%',
+    },
+    limitInputLabel: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#64748b',
+        marginBottom: 4,
+    },
+    limitInput: {
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 9,
+        fontSize: 14,
+        color: '#0f172a',
+        backgroundColor: '#fff',
     },
     modalFooter: {
         flexDirection: 'row',

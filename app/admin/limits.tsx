@@ -14,6 +14,10 @@ import {
 interface SubscriptionPlan {
     id: string;
     name: string;
+    billing_period: string;
+    price_weekly: number;
+    price_monthly: number;
+    price_yearly: number;
     max_operators: number;
     max_customers: number;
     max_branches: number;
@@ -27,8 +31,10 @@ interface CompanyLimit {
     email: string;
     status: string;
     trialEndsAt: string | null;
+    currentPeriodEnd: string | null;
     planId: string | null;
     planName: string | null;
+    planBillingPeriod: string | null;
     maxOperators: number;
     maxCustomers: number;
     maxBranches: number;
@@ -43,7 +49,7 @@ interface CompanyLimit {
     currentWarehouses: number;
 }
 
-const TRIAL_DEFAULTS = { max_operators: 3, max_customers: 10, max_branches: 5, max_warehouses: 1 };
+const TRIAL_DEFAULTS = { max_operators: 1, max_customers: 3, max_branches: 3, max_warehouses: 2 };
 
 const STATUS_COLORS: Record<string, string> = {
     active: '#10b981',
@@ -82,15 +88,15 @@ export default function AdminLimitsPage() {
             const [plansRes, subsRes] = await Promise.all([
                 supabase
                     .from('subscription_plans')
-                    .select('id, name, max_operators, max_customers, max_branches, max_warehouses')
+                    .select('id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses')
                     .eq('is_active', true)
                     .order('display_order'),
                 supabase
                     .from('subscriptions')
                     .select(`
-                        id, company_id, status, trial_ends_at,
+                        id, company_id, status, trial_ends_at, current_period_end,
                         plan_id, max_operators, max_customers, max_branches, max_warehouses,
-                        plan:subscription_plans(id, name, max_operators, max_customers, max_branches, max_warehouses),
+                        plan:subscription_plans(id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses),
                         owner:profiles!subscriptions_company_id_fkey(id, full_name, email, company_name)
                     `)
                     .order('created_at', { ascending: false }),
@@ -142,8 +148,10 @@ export default function AdminLimitsPage() {
                     email: owner?.email || '—',
                     status: s.status,
                     trialEndsAt: s.trial_ends_at,
+                    currentPeriodEnd: s.current_period_end,
                     planId: s.plan_id,
                     planName: plan?.name || null,
+                    planBillingPeriod: plan?.billing_period || null,
                     maxOperators: effectiveOps,
                     maxCustomers: effectiveCust,
                     maxBranches: effectiveBranch,
@@ -187,9 +195,30 @@ export default function AdminLimitsPage() {
         return map;
     };
 
+    const computePeriodEnd = (billingPeriod: string | null): string => {
+        const now = new Date();
+        switch (billingPeriod) {
+            case 'weekly':
+                now.setDate(now.getDate() + 7);
+                break;
+            case 'yearly':
+                now.setFullYear(now.getFullYear() + 1);
+                break;
+            case 'trial':
+                now.setDate(now.getDate() + 7);
+                break;
+            default:
+                now.setMonth(now.getMonth() + 1);
+        }
+        return now.toISOString();
+    };
+
     const handleSave = async (company: CompanyLimit) => {
         setSaving(company.subId);
         try {
+            const selectedPlan = plans.find(p => p.id === company.planId);
+            const newPeriodEnd = selectedPlan ? computePeriodEnd(selectedPlan.billing_period) : null;
+
             const { error } = await supabase
                 .from('subscriptions')
                 .update({
@@ -198,12 +227,14 @@ export default function AdminLimitsPage() {
                     max_customers: company.overrideCustomers ? parseInt(company.overrideCustomers) : null,
                     max_branches: company.overrideBranches ? parseInt(company.overrideBranches) : null,
                     max_warehouses: company.overrideWarehouses ? parseInt(company.overrideWarehouses) : null,
+                    current_period_end: newPeriodEnd,
+                    status: company.planId ? 'active' : company.status,
                     updated_at: new Date().toISOString(),
                 })
                 .eq('id', company.subId);
 
             if (error) throw error;
-            Alert.alert('Başarılı', `${company.companyName} limitleri güncellendi`);
+            Alert.alert('Başarılı', `${company.companyName} aboneliği güncellendi`);
             loadData();
         } catch (e: any) {
             Alert.alert('Hata', e.message);
@@ -300,7 +331,17 @@ export default function AdminLimitsPage() {
                                         </View>
                                         {company.planName && (
                                             <View style={styles.planBadge}>
-                                                <Text style={styles.planBadgeText}>{company.planName}</Text>
+                                                <Text style={styles.planBadgeText}>
+                                                    {company.planName}
+                                                    {company.planBillingPeriod === 'weekly' ? ' · Haftalık' : company.planBillingPeriod === 'yearly' ? ' · Yıllık' : company.planBillingPeriod === 'monthly' ? ' · Aylık' : ''}
+                                                </Text>
+                                            </View>
+                                        )}
+                                        {company.currentPeriodEnd && (
+                                            <View style={styles.dateBadge}>
+                                                <Text style={styles.dateBadgeText}>
+                                                    Bitiş: {new Date(company.currentPeriodEnd).toLocaleDateString('tr-TR')}
+                                                </Text>
                                             </View>
                                         )}
                                     </View>
@@ -332,6 +373,9 @@ export default function AdminLimitsPage() {
                                             <Text style={[styles.planChipText, !company.planId && styles.planChipTextActive]}>
                                                 Deneme
                                             </Text>
+                                            <Text style={[styles.planChipSub, !company.planId && { color: '#fff' }]}>
+                                                7 Gün
+                                            </Text>
                                         </TouchableOpacity>
                                         {plans.map(p => (
                                             <TouchableOpacity
@@ -342,9 +386,41 @@ export default function AdminLimitsPage() {
                                                 <Text style={[styles.planChipText, company.planId === p.id && styles.planChipTextActive]}>
                                                     {p.name}
                                                 </Text>
+                                                <Text style={[styles.planChipSub, company.planId === p.id && { color: '#fff' }]}>
+                                                    {p.billing_period === 'weekly'
+                                                        ? `${p.price_weekly.toFixed(0)}₺/Hf`
+                                                        : p.billing_period === 'yearly'
+                                                        ? `${p.price_yearly.toFixed(0)}₺/Yıl`
+                                                        : `${p.price_monthly.toFixed(0)}₺/Ay`}
+                                                </Text>
                                             </TouchableOpacity>
                                         ))}
                                     </ScrollView>
+
+                                    {company.planId && (() => {
+                                        const selectedPlan = plans.find(p => p.id === company.planId);
+                                        if (!selectedPlan) return null;
+                                        return (
+                                            <View style={styles.planPreviewBox}>
+                                                <Text style={styles.planPreviewTitle}>
+                                                    {selectedPlan.name} — {selectedPlan.billing_period === 'weekly' ? 'Haftalık (7 gün)' : selectedPlan.billing_period === 'yearly' ? 'Yıllık' : 'Aylık'}
+                                                </Text>
+                                                <View style={styles.planPreviewLimits}>
+                                                    {[
+                                                        { label: 'Operatör', value: selectedPlan.max_operators },
+                                                        { label: 'Müşteri', value: selectedPlan.max_customers },
+                                                        { label: 'Şube', value: selectedPlan.max_branches },
+                                                        { label: 'Depo', value: selectedPlan.max_warehouses },
+                                                    ].map(item => (
+                                                        <View key={item.label} style={styles.planPreviewChip}>
+                                                            <Text style={styles.planPreviewNum}>{item.value}</Text>
+                                                            <Text style={styles.planPreviewLabel}>{item.label}</Text>
+                                                        </View>
+                                                    ))}
+                                                </View>
+                                            </View>
+                                        );
+                                    })()}
 
                                     <Text style={styles.sectionTitle}>Özel Limitler <Text style={styles.sectionHint}>(boş = plan/deneme varsayılanı)</Text></Text>
 
@@ -460,6 +536,8 @@ const styles = StyleSheet.create({
     statusBadgeText: { fontSize: 11, fontWeight: '700' },
     planBadge: { backgroundColor: '#f0fdf4', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#bbf7d0' },
     planBadgeText: { fontSize: 11, fontWeight: '600', color: '#15803d' },
+    dateBadge: { backgroundColor: '#f0f9ff', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#bae6fd' },
+    dateBadgeText: { fontSize: 11, fontWeight: '600', color: '#0369a1' },
     cardHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     miniLimits: { alignItems: 'center' },
     miniLimit: { fontSize: 13, fontWeight: '700', color: '#334155' },
@@ -478,6 +556,19 @@ const styles = StyleSheet.create({
     planChipActive: { backgroundColor: '#10b981', borderColor: '#10b981' },
     planChipText: { fontSize: 13, fontWeight: '600', color: '#64748b' },
     planChipTextActive: { color: '#fff' },
+    planChipSub: { fontSize: 10, color: '#94a3b8', marginTop: 2 },
+    planPreviewBox: {
+        backgroundColor: '#f0fdf4', borderRadius: 10, padding: 10,
+        borderWidth: 1, borderColor: '#bbf7d0', marginBottom: 4,
+    },
+    planPreviewTitle: { fontSize: 12, fontWeight: '700', color: '#15803d', marginBottom: 8 },
+    planPreviewLimits: { flexDirection: 'row', gap: 8 },
+    planPreviewChip: {
+        flex: 1, backgroundColor: '#fff', borderRadius: 8, padding: 6,
+        alignItems: 'center', borderWidth: 1, borderColor: '#bbf7d0',
+    },
+    planPreviewNum: { fontSize: 15, fontWeight: '800', color: '#15803d' },
+    planPreviewLabel: { fontSize: 10, color: '#64748b', marginTop: 1 },
     limitsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
     limitCard: {
         width: '47%', backgroundColor: '#f8fafc',
