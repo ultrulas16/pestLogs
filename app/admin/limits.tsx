@@ -93,10 +93,11 @@ export default function AdminLimitsPage() {
                     .order('display_order'),
                 supabase
                     .from('subscriptions')
+                    // Burada !plan_id ve !company_id ekleyerek Supabase'e tam olarak hangi sütunlardan join atacağını söylüyoruz
                     .select(`
                         id, company_id, status, trial_ends_at, current_period_end,
                         plan_id, max_operators, max_customers, max_branches, max_warehouses,
-                        plan:subscription_plans(id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses),
+                        plan:subscription_plans!plan_id(id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses),
                         owner:profiles!company_id(id, full_name, email, company_name)
                     `)
                     .order('created_at', { ascending: false }),
