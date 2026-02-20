@@ -12,6 +12,8 @@ type SubscriptionPlan = {
     description: string;
     price_monthly: number;
     price_yearly: number;
+    price_weekly: number;
+    billing_period: string;
     max_users: number;
     max_operators: number;
     max_warehouses: number;
@@ -21,6 +23,7 @@ type SubscriptionPlan = {
     features: string[];
     is_active: boolean;
     is_popular: boolean;
+    is_trial: boolean;
     display_order: number;
 };
 
@@ -33,12 +36,13 @@ export default function SubscriptionPlansDesktop() {
     const [modalVisible, setModalVisible] = useState(false);
     const [editingPlan, setEditingPlan] = useState<SubscriptionPlan | null>(null);
 
-    // Form state
     const [formData, setFormData] = useState({
         name: '',
         description: '',
         price_monthly: '',
         price_yearly: '',
+        price_weekly: '',
+        billing_period: 'monthly',
         max_users: '',
         max_operators: '',
         max_warehouses: '',
@@ -80,6 +84,8 @@ export default function SubscriptionPlansDesktop() {
             description: '',
             price_monthly: '',
             price_yearly: '',
+            price_weekly: '',
+            billing_period: 'monthly',
             max_users: '',
             max_operators: '',
             max_warehouses: '',
@@ -99,34 +105,48 @@ export default function SubscriptionPlansDesktop() {
         setFormData({
             name: plan.name,
             description: plan.description || '',
-            price_monthly: plan.price_monthly.toString(),
-            price_yearly: plan.price_yearly.toString(),
-            max_users: plan.max_users.toString(),
-            max_operators: plan.max_operators.toString(),
-            max_warehouses: plan.max_warehouses.toString(),
-            max_branches: plan.max_branches.toString(),
-            max_customers: plan.max_customers.toString(),
-            max_storage_gb: plan.max_storage_gb.toString(),
-            features: plan.features.join(', '),
+            price_monthly: plan.price_monthly?.toString() || '0',
+            price_yearly: plan.price_yearly?.toString() || '0',
+            price_weekly: plan.price_weekly?.toString() || '0',
+            billing_period: plan.billing_period || 'monthly',
+            max_users: plan.max_users?.toString() || '1',
+            max_operators: plan.max_operators?.toString() || '1',
+            max_warehouses: plan.max_warehouses?.toString() || '1',
+            max_branches: plan.max_branches?.toString() || '1',
+            max_customers: plan.max_customers?.toString() || '10',
+            max_storage_gb: plan.max_storage_gb?.toString() || '1',
+            features: Array.isArray(plan.features) ? plan.features.join(', ') : '',
             is_active: plan.is_active,
             is_popular: plan.is_popular,
-            display_order: plan.display_order.toString(),
+            display_order: plan.display_order?.toString() || '0',
         });
         setModalVisible(true);
     };
 
+    const getBillingLabel = (period: string) => {
+        switch (period) {
+            case 'weekly': return 'Haftalık';
+            case 'monthly': return 'Aylık';
+            case 'yearly': return 'Yıllık';
+            case 'trial': return '7 Günlük Deneme';
+            default: return period;
+        }
+    };
+
     const handleSave = async () => {
         try {
-            if (!formData.name || !formData.price_monthly || !formData.price_yearly) {
-                Alert.alert('Hata', 'Lütfen zorunlu alanları doldurun');
+            if (!formData.name) {
+                Alert.alert('Hata', 'Lütfen paket adını girin');
                 return;
             }
 
             const planData = {
                 name: formData.name,
                 description: formData.description,
-                price_monthly: parseFloat(formData.price_monthly),
-                price_yearly: parseFloat(formData.price_yearly),
+                price_monthly: parseFloat(formData.price_monthly) || 0,
+                price_yearly: parseFloat(formData.price_yearly) || 0,
+                price_weekly: parseFloat(formData.price_weekly) || 0,
+                billing_period: formData.billing_period || 'monthly',
                 max_users: parseInt(formData.max_users) || 1,
                 max_operators: parseInt(formData.max_operators) || 1,
                 max_warehouses: parseInt(formData.max_warehouses) || 1,
@@ -164,14 +184,18 @@ export default function SubscriptionPlansDesktop() {
         }
     };
 
-    const handleDelete = async (id: string) => {
+    const handleDelete = async (plan: SubscriptionPlan) => {
+        if (plan.is_trial) {
+            alert('Deneme planı silinemez');
+            return;
+        }
         if (Platform.OS === 'web') {
             if (confirm('Bu paketi silmek istediğinizden emin misiniz?')) {
                 try {
                     const { error } = await supabase
                         .from('subscription_plans')
                         .delete()
-                        .eq('id', id);
+                        .eq('id', plan.id);
 
                     if (error) throw error;
                     alert('Paket silindi');
@@ -195,7 +219,7 @@ export default function SubscriptionPlansDesktop() {
                                 const { error } = await supabase
                                     .from('subscription_plans')
                                     .delete()
-                                    .eq('id', id);
+                                    .eq('id', plan.id);
 
                                 if (error) throw error;
                                 Alert.alert('Başarılı', 'Paket silindi');
@@ -238,13 +262,18 @@ export default function SubscriptionPlansDesktop() {
                 <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
                     <View style={styles.grid}>
                         {plans.map((plan) => (
-                            <View key={plan.id} style={styles.planCard}>
+                            <View key={plan.id} style={[styles.planCard, plan.is_trial && styles.trialCard]}>
                                 <View style={styles.planHeader}>
                                     <View style={styles.planIcon}>
-                                        <Package size={24} color="#7c3aed" />
+                                        <Package size={24} color="#2563eb" />
                                     </View>
                                     <View style={styles.planActions}>
-                                        {plan.is_popular && (
+                                        {plan.is_trial && (
+                                            <View style={styles.trialBadge}>
+                                                <Text style={styles.trialText}>Deneme</Text>
+                                            </View>
+                                        )}
+                                        {plan.is_popular && !plan.is_trial && (
                                             <View style={styles.popularBadge}>
                                                 <Text style={styles.popularText}>Popüler</Text>
                                             </View>
@@ -257,9 +286,11 @@ export default function SubscriptionPlansDesktop() {
                                         <TouchableOpacity onPress={() => openEditModal(plan)} style={styles.actionButton}>
                                             <Edit2 size={18} color="#64748b" />
                                         </TouchableOpacity>
-                                        <TouchableOpacity onPress={() => handleDelete(plan.id)} style={[styles.actionButton, styles.deleteButton]}>
-                                            <Trash2 size={18} color="#ef4444" />
-                                        </TouchableOpacity>
+                                        {!plan.is_trial && (
+                                            <TouchableOpacity onPress={() => handleDelete(plan)} style={[styles.actionButton, styles.deleteButton]}>
+                                                <Trash2 size={18} color="#ef4444" />
+                                            </TouchableOpacity>
+                                        )}
                                     </View>
                                 </View>
 
@@ -268,27 +299,43 @@ export default function SubscriptionPlansDesktop() {
                                     {plan.description}
                                 </Text>
 
-                                <View style={styles.divider} />
-
-                                <View style={styles.priceContainer}>
-                                    <View>
-                                        <Text style={styles.priceLabel}>Aylık</Text>
-                                        <Text style={styles.priceValue}>{plan.price_monthly.toFixed(2)} ₺</Text>
-                                    </View>
-                                    <View style={styles.verticalDivider} />
-                                    <View>
-                                        <Text style={styles.priceLabel}>Yıllık</Text>
-                                        <Text style={styles.priceValue}>{plan.price_yearly.toFixed(2)} ₺</Text>
-                                    </View>
+                                <View style={styles.billingBadge}>
+                                    <Text style={styles.billingBadgeText}>{getBillingLabel(plan.billing_period)}</Text>
                                 </View>
 
                                 <View style={styles.divider} />
 
-                                <View style={styles.limitsGrid}>
-                                    <View style={styles.limitItem}>
-                                        <Text style={styles.limitValue}>{plan.max_users}</Text>
-                                        <Text style={styles.limitLabel}>Kullanıcı</Text>
+                                {plan.billing_period === 'weekly' ? (
+                                    <View style={styles.priceContainer}>
+                                        <View>
+                                            <Text style={styles.priceLabel}>Haftalık</Text>
+                                            <Text style={styles.priceValue}>{(plan.price_weekly || 0).toFixed(2)} ₺</Text>
+                                        </View>
                                     </View>
+                                ) : plan.billing_period === 'trial' ? (
+                                    <View style={styles.priceContainer}>
+                                        <View>
+                                            <Text style={styles.priceLabel}>Süre</Text>
+                                            <Text style={styles.priceValue}>7 Gün Ücretsiz</Text>
+                                        </View>
+                                    </View>
+                                ) : (
+                                    <View style={styles.priceContainer}>
+                                        <View>
+                                            <Text style={styles.priceLabel}>Aylık</Text>
+                                            <Text style={styles.priceValue}>{(plan.price_monthly || 0).toFixed(2)} ₺</Text>
+                                        </View>
+                                        <View style={styles.verticalDivider} />
+                                        <View>
+                                            <Text style={styles.priceLabel}>Yıllık</Text>
+                                            <Text style={styles.priceValue}>{(plan.price_yearly || 0).toFixed(2)} ₺</Text>
+                                        </View>
+                                    </View>
+                                )}
+
+                                <View style={styles.divider} />
+
+                                <View style={styles.limitsGrid}>
                                     <View style={styles.limitItem}>
                                         <Text style={styles.limitValue}>{plan.max_operators}</Text>
                                         <Text style={styles.limitLabel}>Operatör</Text>
@@ -297,22 +344,32 @@ export default function SubscriptionPlansDesktop() {
                                         <Text style={styles.limitValue}>{plan.max_customers}</Text>
                                         <Text style={styles.limitLabel}>Müşteri</Text>
                                     </View>
-                                </View>
-
-                                <View style={styles.featuresContainer}>
-                                    <Text style={styles.featuresTitle}>Özellikler ({plan.features.length})</Text>
-                                    <View style={styles.featuresList}>
-                                        {plan.features.slice(0, 3).map((feature, index) => (
-                                            <View key={index} style={styles.featureItem}>
-                                                <Check size={14} color="#10b981" />
-                                                <Text style={styles.featureText} numberOfLines={1}>{feature}</Text>
-                                            </View>
-                                        ))}
-                                        {plan.features.length > 3 && (
-                                            <Text style={styles.moreFeatures}>+ {plan.features.length - 3} daha</Text>
-                                        )}
+                                    <View style={styles.limitItem}>
+                                        <Text style={styles.limitValue}>{plan.max_branches}</Text>
+                                        <Text style={styles.limitLabel}>Şube</Text>
+                                    </View>
+                                    <View style={styles.limitItem}>
+                                        <Text style={styles.limitValue}>{plan.max_warehouses}</Text>
+                                        <Text style={styles.limitLabel}>Depo</Text>
                                     </View>
                                 </View>
+
+                                {Array.isArray(plan.features) && plan.features.length > 0 && (
+                                    <View style={styles.featuresContainer}>
+                                        <Text style={styles.featuresTitle}>Özellikler ({plan.features.length})</Text>
+                                        <View style={styles.featuresList}>
+                                            {plan.features.slice(0, 3).map((feature, index) => (
+                                                <View key={index} style={styles.featureItem}>
+                                                    <Check size={14} color="#10b981" />
+                                                    <Text style={styles.featureText} numberOfLines={1}>{feature}</Text>
+                                                </View>
+                                            ))}
+                                            {plan.features.length > 3 && (
+                                                <Text style={styles.moreFeatures}>+ {plan.features.length - 3} daha</Text>
+                                            )}
+                                        </View>
+                                    </View>
+                                )}
                             </View>
                         ))}
 
@@ -365,40 +422,66 @@ export default function SubscriptionPlansDesktop() {
                                         />
                                     </View>
 
+                                    <Text style={[styles.sectionTitle, styles.colSpan2]}>Faturalandırma Dönemi</Text>
+                                    <View style={[styles.colSpan2, styles.periodRow]}>
+                                        {['weekly', 'monthly', 'yearly'].map((period) => (
+                                            <TouchableOpacity
+                                                key={period}
+                                                style={[styles.periodChip, formData.billing_period === period && styles.periodChipActive]}
+                                                onPress={() => setFormData({ ...formData, billing_period: period })}
+                                            >
+                                                <Text style={[styles.periodChipText, formData.billing_period === period && styles.periodChipTextActive]}>
+                                                    {period === 'weekly' ? 'Haftalık' : period === 'monthly' ? 'Aylık' : 'Yıllık'}
+                                                </Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+
                                     <View style={styles.formGroup}>
-                                        <Text style={styles.inputLabel}>Aylık Fiyat (₺) *</Text>
+                                        <Text style={styles.inputLabel}>Haftalık Fiyat (₺)</Text>
+                                        <TextInput
+                                            style={styles.input}
+                                            value={formData.price_weekly}
+                                            onChangeText={(text) => setFormData({ ...formData, price_weekly: text })}
+                                            placeholder="0.00"
+                                            keyboardType="decimal-pad"
+                                        />
+                                    </View>
+
+                                    <View style={styles.formGroup}>
+                                        <Text style={styles.inputLabel}>Aylık Fiyat (₺)</Text>
                                         <TextInput
                                             style={styles.input}
                                             value={formData.price_monthly}
                                             onChangeText={(text) => setFormData({ ...formData, price_monthly: text })}
-                                            placeholder="99.00"
+                                            placeholder="0.00"
                                             keyboardType="decimal-pad"
                                         />
                                     </View>
 
                                     <View style={styles.formGroup}>
-                                        <Text style={styles.inputLabel}>Yıllık Fiyat (₺) *</Text>
+                                        <Text style={styles.inputLabel}>Yıllık Fiyat (₺)</Text>
                                         <TextInput
                                             style={styles.input}
                                             value={formData.price_yearly}
                                             onChangeText={(text) => setFormData({ ...formData, price_yearly: text })}
-                                            placeholder="990.00"
+                                            placeholder="0.00"
                                             keyboardType="decimal-pad"
                                         />
                                     </View>
 
-                                    <Text style={[styles.sectionTitle, styles.colSpan2]}>Limitler</Text>
-
                                     <View style={styles.formGroup}>
-                                        <Text style={styles.inputLabel}>Max Kullanıcı</Text>
+                                        <Text style={styles.inputLabel}>Depolama (GB)</Text>
                                         <TextInput
                                             style={styles.input}
-                                            value={formData.max_users}
-                                            onChangeText={(text) => setFormData({ ...formData, max_users: text })}
+                                            value={formData.max_storage_gb}
+                                            onChangeText={(text) => setFormData({ ...formData, max_storage_gb: text })}
                                             placeholder="10"
                                             keyboardType="number-pad"
                                         />
                                     </View>
+
+                                    <Text style={[styles.sectionTitle, styles.colSpan2]}>Limitler</Text>
 
                                     <View style={styles.formGroup}>
                                         <Text style={styles.inputLabel}>Max Operatör</Text>
@@ -406,6 +489,28 @@ export default function SubscriptionPlansDesktop() {
                                             style={styles.input}
                                             value={formData.max_operators}
                                             onChangeText={(text) => setFormData({ ...formData, max_operators: text })}
+                                            placeholder="1"
+                                            keyboardType="number-pad"
+                                        />
+                                    </View>
+
+                                    <View style={styles.formGroup}>
+                                        <Text style={styles.inputLabel}>Max Müşteri</Text>
+                                        <TextInput
+                                            style={styles.input}
+                                            value={formData.max_customers}
+                                            onChangeText={(text) => setFormData({ ...formData, max_customers: text })}
+                                            placeholder="10"
+                                            keyboardType="number-pad"
+                                        />
+                                    </View>
+
+                                    <View style={styles.formGroup}>
+                                        <Text style={styles.inputLabel}>Max Şube</Text>
+                                        <TextInput
+                                            style={styles.input}
+                                            value={formData.max_branches}
+                                            onChangeText={(text) => setFormData({ ...formData, max_branches: text })}
                                             placeholder="5"
                                             keyboardType="number-pad"
                                         />
@@ -417,40 +522,7 @@ export default function SubscriptionPlansDesktop() {
                                             style={styles.input}
                                             value={formData.max_warehouses}
                                             onChangeText={(text) => setFormData({ ...formData, max_warehouses: text })}
-                                            placeholder="3"
-                                            keyboardType="number-pad"
-                                        />
-                                    </View>
-
-                                    <View style={styles.formGroup}>
-                                        <Text style={styles.inputLabel}>Max Şube</Text>
-                                        <TextInput
-                                            style={styles.input}
-                                            value={formData.max_branches}
-                                            onChangeText={(text) => setFormData({ ...formData, max_branches: text })}
-                                            placeholder="10"
-                                            keyboardType="number-pad"
-                                        />
-                                    </View>
-
-                                    <View style={styles.formGroup}>
-                                        <Text style={styles.inputLabel}>Max Müşteri</Text>
-                                        <TextInput
-                                            style={styles.input}
-                                            value={formData.max_customers}
-                                            onChangeText={(text) => setFormData({ ...formData, max_customers: text })}
-                                            placeholder="200"
-                                            keyboardType="number-pad"
-                                        />
-                                    </View>
-
-                                    <View style={styles.formGroup}>
-                                        <Text style={styles.inputLabel}>Depolama (GB)</Text>
-                                        <TextInput
-                                            style={styles.input}
-                                            value={formData.max_storage_gb}
-                                            onChangeText={(text) => setFormData({ ...formData, max_storage_gb: text })}
-                                            placeholder="20"
+                                            placeholder="1"
                                             keyboardType="number-pad"
                                         />
                                     </View>
@@ -549,7 +621,7 @@ const styles = StyleSheet.create({
     addButton: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: '#7c3aed',
+        backgroundColor: '#2563eb',
         paddingHorizontal: 20,
         paddingVertical: 10,
         borderRadius: 8,
@@ -591,7 +663,7 @@ const styles = StyleSheet.create({
         width: 48,
         height: 48,
         borderRadius: 12,
-        backgroundColor: '#f5f3ff',
+        backgroundColor: '#eff6ff',
         justifyContent: 'center',
         alignItems: 'center',
     },
@@ -607,6 +679,22 @@ const styles = StyleSheet.create({
     },
     deleteButton: {
         backgroundColor: '#fee2e2',
+    },
+    trialCard: {
+        borderColor: '#f97316',
+        borderWidth: 2,
+    },
+    trialBadge: {
+        backgroundColor: '#f97316',
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+        marginRight: 4,
+    },
+    trialText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#fff',
     },
     popularBadge: {
         backgroundColor: '#10b981',
@@ -630,6 +718,44 @@ const styles = StyleSheet.create({
     inactiveText: {
         fontSize: 11,
         fontWeight: '600',
+        color: '#fff',
+    },
+    billingBadge: {
+        alignSelf: 'flex-start',
+        backgroundColor: '#eff6ff',
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 4,
+        marginBottom: 12,
+    },
+    billingBadgeText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#2563eb',
+    },
+    periodRow: {
+        flexDirection: 'row',
+        gap: 8,
+        marginBottom: 8,
+    },
+    periodChip: {
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#f8fafc',
+    },
+    periodChipActive: {
+        backgroundColor: '#2563eb',
+        borderColor: '#2563eb',
+    },
+    periodChipText: {
+        fontSize: 13,
+        color: '#64748b',
+        fontWeight: '500',
+    },
+    periodChipTextActive: {
         color: '#fff',
     },
     planName: {
@@ -667,11 +793,13 @@ const styles = StyleSheet.create({
     priceValue: {
         fontSize: 18,
         fontWeight: '700',
-        color: '#7c3aed',
+        color: '#2563eb',
     },
     limitsGrid: {
         flexDirection: 'row',
         justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: 8,
         marginBottom: 16,
     },
     limitItem: {
@@ -729,7 +857,7 @@ const styles = StyleSheet.create({
         marginVertical: 16,
     },
     createButton: {
-        backgroundColor: '#7c3aed',
+        backgroundColor: '#2563eb',
         paddingHorizontal: 24,
         paddingVertical: 12,
         borderRadius: 8,
@@ -836,8 +964,8 @@ const styles = StyleSheet.create({
         backgroundColor: '#fff',
     },
     checkboxChecked: {
-        backgroundColor: '#7c3aed',
-        borderColor: '#7c3aed',
+        backgroundColor: '#2563eb',
+        borderColor: '#2563eb',
     },
     checkboxLabel: {
         fontSize: 14,
@@ -869,7 +997,7 @@ const styles = StyleSheet.create({
         fontWeight: '500',
     },
     saveButton: {
-        backgroundColor: '#7c3aed',
+        backgroundColor: '#2563eb',
     },
     saveButtonText: {
         color: '#fff',

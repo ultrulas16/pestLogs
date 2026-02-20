@@ -12,6 +12,8 @@ type SubscriptionPlan = {
     description: string;
     price_monthly: number;
     price_yearly: number;
+    price_weekly: number;
+    billing_period: string;
     max_users: number;
     max_operators: number;
     max_warehouses: number;
@@ -21,6 +23,7 @@ type SubscriptionPlan = {
     features: string[];
     is_active: boolean;
     is_popular: boolean;
+    is_trial: boolean;
     display_order: number;
 };
 
@@ -41,12 +44,13 @@ export default function SubscriptionPlans() {
     const [modalVisible, setModalVisible] = useState(false);
     const [editingPlan, setEditingPlan] = useState<SubscriptionPlan | null>(null);
 
-    // Form state
     const [formData, setFormData] = useState({
         name: '',
         description: '',
         price_monthly: '',
         price_yearly: '',
+        price_weekly: '',
+        billing_period: 'monthly',
         max_users: '',
         max_operators: '',
         max_warehouses: '',
@@ -88,6 +92,8 @@ export default function SubscriptionPlans() {
             description: '',
             price_monthly: '',
             price_yearly: '',
+            price_weekly: '',
+            billing_period: 'monthly',
             max_users: '',
             max_operators: '',
             max_warehouses: '',
@@ -107,34 +113,38 @@ export default function SubscriptionPlans() {
         setFormData({
             name: plan.name,
             description: plan.description || '',
-            price_monthly: plan.price_monthly.toString(),
-            price_yearly: plan.price_yearly.toString(),
-            max_users: plan.max_users.toString(),
-            max_operators: plan.max_operators.toString(),
-            max_warehouses: plan.max_warehouses.toString(),
-            max_branches: plan.max_branches.toString(),
-            max_customers: plan.max_customers.toString(),
-            max_storage_gb: plan.max_storage_gb.toString(),
-            features: plan.features.join(', '),
+            price_monthly: plan.price_monthly?.toString() || '0',
+            price_yearly: plan.price_yearly?.toString() || '0',
+            price_weekly: plan.price_weekly?.toString() || '0',
+            billing_period: plan.billing_period || 'monthly',
+            max_users: plan.max_users?.toString() || '1',
+            max_operators: plan.max_operators?.toString() || '1',
+            max_warehouses: plan.max_warehouses?.toString() || '1',
+            max_branches: plan.max_branches?.toString() || '1',
+            max_customers: plan.max_customers?.toString() || '10',
+            max_storage_gb: plan.max_storage_gb?.toString() || '1',
+            features: Array.isArray(plan.features) ? plan.features.join(', ') : '',
             is_active: plan.is_active,
             is_popular: plan.is_popular,
-            display_order: plan.display_order.toString(),
+            display_order: plan.display_order?.toString() || '0',
         });
         setModalVisible(true);
     };
 
     const handleSave = async () => {
         try {
-            if (!formData.name || !formData.price_monthly || !formData.price_yearly) {
-                Alert.alert('Hata', 'Lütfen zorunlu alanları doldurun');
+            if (!formData.name) {
+                Alert.alert('Hata', 'Lütfen paket adını girin');
                 return;
             }
 
             const planData = {
                 name: formData.name,
                 description: formData.description,
-                price_monthly: parseFloat(formData.price_monthly),
-                price_yearly: parseFloat(formData.price_yearly),
+                price_monthly: parseFloat(formData.price_monthly) || 0,
+                price_yearly: parseFloat(formData.price_yearly) || 0,
+                price_weekly: parseFloat(formData.price_weekly) || 0,
+                billing_period: formData.billing_period || 'monthly',
                 max_users: parseInt(formData.max_users) || 1,
                 max_operators: parseInt(formData.max_operators) || 1,
                 max_warehouses: parseInt(formData.max_warehouses) || 1,
@@ -172,7 +182,11 @@ export default function SubscriptionPlans() {
         }
     };
 
-    const handleDelete = async (id: string) => {
+    const handleDelete = async (plan: SubscriptionPlan) => {
+        if (plan.is_trial) {
+            Alert.alert('Uyarı', 'Deneme planı silinemez');
+            return;
+        }
         Alert.alert(
             'Paketi Sil',
             'Bu paketi silmek istediğinizden emin misiniz?',
@@ -186,7 +200,7 @@ export default function SubscriptionPlans() {
                             const { error } = await supabase
                                 .from('subscription_plans')
                                 .delete()
-                                .eq('id', id);
+                                .eq('id', plan.id);
 
                             if (error) throw error;
                             Alert.alert('Başarılı', 'Paket silindi');
@@ -199,6 +213,16 @@ export default function SubscriptionPlans() {
                 },
             ]
         );
+    };
+
+    const getBillingLabel = (period: string) => {
+        switch (period) {
+            case 'weekly': return 'Haftalık';
+            case 'monthly': return 'Aylık';
+            case 'yearly': return 'Yıllık';
+            case 'trial': return '7 Günlük Deneme';
+            default: return period;
+        }
     };
 
     if (loading) {
@@ -228,9 +252,14 @@ export default function SubscriptionPlans() {
                     <View key={plan.id} style={styles.planCard}>
                         <View style={styles.planHeader}>
                             <View style={styles.planTitleRow}>
-                                <Package size={20} color="#7c3aed" />
+                                <Package size={20} color="#2563eb" />
                                 <Text style={styles.planName}>{plan.name}</Text>
-                                {plan.is_popular && (
+                                {plan.is_trial && (
+                                    <View style={styles.trialBadge}>
+                                        <Text style={styles.trialText}>Deneme</Text>
+                                    </View>
+                                )}
+                                {plan.is_popular && !plan.is_trial && (
                                     <View style={styles.popularBadge}>
                                         <Text style={styles.popularText}>Popüler</Text>
                                     </View>
@@ -245,9 +274,11 @@ export default function SubscriptionPlans() {
                                 <TouchableOpacity onPress={() => openEditModal(plan)} style={styles.actionButton}>
                                     <Edit2 size={18} color="#3b82f6" />
                                 </TouchableOpacity>
-                                <TouchableOpacity onPress={() => handleDelete(plan.id)} style={styles.actionButton}>
-                                    <Trash2 size={18} color="#ef4444" />
-                                </TouchableOpacity>
+                                {!plan.is_trial && (
+                                    <TouchableOpacity onPress={() => handleDelete(plan)} style={styles.actionButton}>
+                                        <Trash2 size={18} color="#ef4444" />
+                                    </TouchableOpacity>
+                                )}
                             </View>
                         </View>
 
@@ -255,45 +286,55 @@ export default function SubscriptionPlans() {
                             <Text style={styles.planDescription}>{plan.description}</Text>
                         )}
 
+                        <View style={styles.billingBadge}>
+                            <Text style={styles.billingText}>{getBillingLabel(plan.billing_period)}</Text>
+                        </View>
+
                         <View style={styles.priceRow}>
-                            <View style={styles.priceBox}>
-                                <Text style={styles.priceLabel}>Aylık</Text>
-                                <Text style={styles.priceValue}>{plan.price_monthly.toFixed(2)} ₺</Text>
-                            </View>
-                            <View style={styles.priceBox}>
-                                <Text style={styles.priceLabel}>Yıllık</Text>
-                                <Text style={styles.priceValue}>{plan.price_yearly.toFixed(2)} ₺</Text>
-                            </View>
+                            {plan.billing_period === 'weekly' ? (
+                                <View style={[styles.priceBox, { flex: 1 }]}>
+                                    <Text style={styles.priceLabel}>Haftalık</Text>
+                                    <Text style={styles.priceValue}>{(plan.price_weekly || 0).toFixed(2)} ₺</Text>
+                                </View>
+                            ) : plan.billing_period === 'trial' ? (
+                                <View style={[styles.priceBox, { flex: 1 }]}>
+                                    <Text style={styles.priceLabel}>Süre</Text>
+                                    <Text style={styles.priceValue}>7 Gün Ücretsiz</Text>
+                                </View>
+                            ) : (
+                                <>
+                                    <View style={styles.priceBox}>
+                                        <Text style={styles.priceLabel}>Aylık</Text>
+                                        <Text style={styles.priceValue}>{(plan.price_monthly || 0).toFixed(2)} ₺</Text>
+                                    </View>
+                                    <View style={styles.priceBox}>
+                                        <Text style={styles.priceLabel}>Yıllık</Text>
+                                        <Text style={styles.priceValue}>{(plan.price_yearly || 0).toFixed(2)} ₺</Text>
+                                    </View>
+                                </>
+                            )}
                         </View>
 
                         <View style={styles.limitsGrid}>
                             <View style={styles.limitItem}>
-                                <Text style={styles.limitLabel}>Kullanıcı</Text>
-                                <Text style={styles.limitValue}>{plan.max_users}</Text>
-                            </View>
-                            <View style={styles.limitItem}>
                                 <Text style={styles.limitLabel}>Operatör</Text>
                                 <Text style={styles.limitValue}>{plan.max_operators}</Text>
-                            </View>
-                            <View style={styles.limitItem}>
-                                <Text style={styles.limitLabel}>Depo</Text>
-                                <Text style={styles.limitValue}>{plan.max_warehouses}</Text>
-                            </View>
-                            <View style={styles.limitItem}>
-                                <Text style={styles.limitLabel}>Şube</Text>
-                                <Text style={styles.limitValue}>{plan.max_branches}</Text>
                             </View>
                             <View style={styles.limitItem}>
                                 <Text style={styles.limitLabel}>Müşteri</Text>
                                 <Text style={styles.limitValue}>{plan.max_customers}</Text>
                             </View>
                             <View style={styles.limitItem}>
-                                <Text style={styles.limitLabel}>Depolama</Text>
-                                <Text style={styles.limitValue}>{plan.max_storage_gb} GB</Text>
+                                <Text style={styles.limitLabel}>Şube</Text>
+                                <Text style={styles.limitValue}>{plan.max_branches}</Text>
+                            </View>
+                            <View style={styles.limitItem}>
+                                <Text style={styles.limitLabel}>Depo</Text>
+                                <Text style={styles.limitValue}>{plan.max_warehouses}</Text>
                             </View>
                         </View>
 
-                        {plan.features.length > 0 && (
+                        {Array.isArray(plan.features) && plan.features.length > 0 && (
                             <View style={styles.featuresSection}>
                                 <Text style={styles.featuresTitle}>Özellikler:</Text>
                                 {plan.features.map((feature, index) => (
@@ -337,7 +378,7 @@ export default function SubscriptionPlans() {
                                 style={styles.input}
                                 value={formData.name}
                                 onChangeText={(text) => setFormData({ ...formData, name: text })}
-                                placeholder="Örn: Profesyonel"
+                                placeholder="Örn: Pro"
                             />
 
                             <Text style={styles.inputLabel}>Açıklama</Text>
@@ -350,24 +391,51 @@ export default function SubscriptionPlans() {
                                 numberOfLines={3}
                             />
 
+                            <Text style={styles.sectionTitle}>Faturalandırma Dönemi</Text>
+                            <View style={styles.periodRow}>
+                                {['weekly', 'monthly', 'yearly'].map((period) => (
+                                    <TouchableOpacity
+                                        key={period}
+                                        style={[styles.periodChip, formData.billing_period === period && styles.periodChipActive]}
+                                        onPress={() => setFormData({ ...formData, billing_period: period })}
+                                    >
+                                        <Text style={[styles.periodChipText, formData.billing_period === period && styles.periodChipTextActive]}>
+                                            {period === 'weekly' ? 'Haftalık' : period === 'monthly' ? 'Aylık' : 'Yıllık'}
+                                        </Text>
+                                    </TouchableOpacity>
+                                ))}
+                            </View>
+
                             <View style={styles.row}>
                                 <View style={styles.halfInput}>
-                                    <Text style={styles.inputLabel}>Aylık Fiyat (₺) *</Text>
+                                    <Text style={styles.inputLabel}>Haftalık Fiyat (₺)</Text>
                                     <TextInput
                                         style={styles.input}
-                                        value={formData.price_monthly}
-                                        onChangeText={(text) => setFormData({ ...formData, price_monthly: text })}
-                                        placeholder="99.00"
+                                        value={formData.price_weekly}
+                                        onChangeText={(text) => setFormData({ ...formData, price_weekly: text })}
+                                        placeholder="0.00"
                                         keyboardType="decimal-pad"
                                     />
                                 </View>
                                 <View style={styles.halfInput}>
-                                    <Text style={styles.inputLabel}>Yıllık Fiyat (₺) *</Text>
+                                    <Text style={styles.inputLabel}>Aylık Fiyat (₺)</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        value={formData.price_monthly}
+                                        onChangeText={(text) => setFormData({ ...formData, price_monthly: text })}
+                                        placeholder="0.00"
+                                        keyboardType="decimal-pad"
+                                    />
+                                </View>
+                            </View>
+                            <View style={styles.row}>
+                                <View style={styles.halfInput}>
+                                    <Text style={styles.inputLabel}>Yıllık Fiyat (₺)</Text>
                                     <TextInput
                                         style={styles.input}
                                         value={formData.price_yearly}
                                         onChangeText={(text) => setFormData({ ...formData, price_yearly: text })}
-                                        placeholder="990.00"
+                                        placeholder="0.00"
                                         keyboardType="decimal-pad"
                                     />
                                 </View>
@@ -377,68 +445,45 @@ export default function SubscriptionPlans() {
 
                             <View style={styles.row}>
                                 <View style={styles.halfInput}>
-                                    <Text style={styles.inputLabel}>Max Kullanıcı</Text>
-                                    <TextInput
-                                        style={styles.input}
-                                        value={formData.max_users}
-                                        onChangeText={(text) => setFormData({ ...formData, max_users: text })}
-                                        placeholder="10"
-                                        keyboardType="number-pad"
-                                    />
-                                </View>
-                                <View style={styles.halfInput}>
                                     <Text style={styles.inputLabel}>Max Operatör</Text>
                                     <TextInput
                                         style={styles.input}
                                         value={formData.max_operators}
                                         onChangeText={(text) => setFormData({ ...formData, max_operators: text })}
-                                        placeholder="5"
+                                        placeholder="1"
                                         keyboardType="number-pad"
                                     />
                                 </View>
-                            </View>
-
-                            <View style={styles.row}>
-                                <View style={styles.halfInput}>
-                                    <Text style={styles.inputLabel}>Max Depo</Text>
-                                    <TextInput
-                                        style={styles.input}
-                                        value={formData.max_warehouses}
-                                        onChangeText={(text) => setFormData({ ...formData, max_warehouses: text })}
-                                        placeholder="3"
-                                        keyboardType="number-pad"
-                                    />
-                                </View>
-                                <View style={styles.halfInput}>
-                                    <Text style={styles.inputLabel}>Max Şube</Text>
-                                    <TextInput
-                                        style={styles.input}
-                                        value={formData.max_branches}
-                                        onChangeText={(text) => setFormData({ ...formData, max_branches: text })}
-                                        placeholder="10"
-                                        keyboardType="number-pad"
-                                    />
-                                </View>
-                            </View>
-
-                            <View style={styles.row}>
                                 <View style={styles.halfInput}>
                                     <Text style={styles.inputLabel}>Max Müşteri</Text>
                                     <TextInput
                                         style={styles.input}
                                         value={formData.max_customers}
                                         onChangeText={(text) => setFormData({ ...formData, max_customers: text })}
-                                        placeholder="200"
+                                        placeholder="10"
+                                        keyboardType="number-pad"
+                                    />
+                                </View>
+                            </View>
+
+                            <View style={styles.row}>
+                                <View style={styles.halfInput}>
+                                    <Text style={styles.inputLabel}>Max Şube</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        value={formData.max_branches}
+                                        onChangeText={(text) => setFormData({ ...formData, max_branches: text })}
+                                        placeholder="5"
                                         keyboardType="number-pad"
                                     />
                                 </View>
                                 <View style={styles.halfInput}>
-                                    <Text style={styles.inputLabel}>Depolama (GB)</Text>
+                                    <Text style={styles.inputLabel}>Max Depo</Text>
                                     <TextInput
                                         style={styles.input}
-                                        value={formData.max_storage_gb}
-                                        onChangeText={(text) => setFormData({ ...formData, max_storage_gb: text })}
-                                        placeholder="20"
+                                        value={formData.max_warehouses}
+                                        onChangeText={(text) => setFormData({ ...formData, max_warehouses: text })}
+                                        placeholder="1"
                                         keyboardType="number-pad"
                                     />
                                 </View>
@@ -517,7 +562,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     header: {
-        backgroundColor: '#7c3aed',
+        backgroundColor: '#2563eb',
         paddingTop: 44,
         paddingBottom: 16,
         paddingHorizontal: 16,
@@ -572,6 +617,17 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
         color: '#333',
     },
+    trialBadge: {
+        backgroundColor: '#f97316',
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
+    trialText: {
+        fontSize: 10,
+        fontWeight: '600',
+        color: '#fff',
+    },
     popularBadge: {
         backgroundColor: '#10b981',
         paddingHorizontal: 8,
@@ -592,6 +648,44 @@ const styles = StyleSheet.create({
     inactiveText: {
         fontSize: 10,
         fontWeight: '600',
+        color: '#fff',
+    },
+    billingBadge: {
+        alignSelf: 'flex-start',
+        backgroundColor: '#eff6ff',
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 4,
+        marginBottom: 10,
+    },
+    billingText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#2563eb',
+    },
+    periodRow: {
+        flexDirection: 'row',
+        gap: 8,
+        marginBottom: 8,
+    },
+    periodChip: {
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#e5e7eb',
+        backgroundColor: '#f9fafb',
+    },
+    periodChipActive: {
+        backgroundColor: '#2563eb',
+        borderColor: '#2563eb',
+    },
+    periodChipText: {
+        fontSize: 13,
+        color: '#666',
+        fontWeight: '500',
+    },
+    periodChipTextActive: {
         color: '#fff',
     },
     planActions: {
@@ -685,7 +779,7 @@ const styles = StyleSheet.create({
         color: '#999',
     },
     createButton: {
-        backgroundColor: '#7c3aed',
+        backgroundColor: '#2563eb',
         paddingHorizontal: 24,
         paddingVertical: 12,
         borderRadius: 8,
@@ -772,7 +866,7 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     checkboxChecked: {
-        backgroundColor: '#7c3aed',
+        backgroundColor: '#2563eb',
         borderColor: '#7c3aed',
     },
     checkboxLabel: {
@@ -801,7 +895,7 @@ const styles = StyleSheet.create({
         fontWeight: '600',
     },
     saveButton: {
-        backgroundColor: '#7c3aed',
+        backgroundColor: '#2563eb',
     },
     saveButtonText: {
         color: '#fff',
