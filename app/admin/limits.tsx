@@ -85,7 +85,7 @@ export default function AdminLimitsPage() {
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            // 1) Planları çek (plan seçici için)
+            // 1) Planları çek
             const plansRes = await supabase
                 .from('subscription_plans')
                 .select('id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses')
@@ -96,54 +96,132 @@ export default function AdminLimitsPage() {
             const planList: SubscriptionPlan[] = plansRes.data || [];
             setPlans(planList);
 
-            // 2) admin_company_stats view'ından tüm verileri tek sorguda çek
-            const statsRes = await supabase
-                .from('admin_company_stats')
-                .select('*');
+            // Plan map: id -> plan
+            const planMap: Record<string, SubscriptionPlan> = {};
+            planList.forEach(p => { planMap[p.id] = p; });
 
-            if (statsRes.error) {
-                console.error('Stats view hatası:', statsRes.error);
-                Alert.alert('Veri Hatası', statsRes.error.message);
+            // 2) Abonelikleri çek (join YOK)
+            const subsRes = await supabase
+                .from('subscriptions')
+                .select('id, company_id, status, trial_ends_at, current_period_end, plan_id, max_operators, max_customers, max_branches, max_warehouses')
+                .order('created_at', { ascending: false });
+
+            if (subsRes.error) {
+                console.error('Abonelikleri çekerken hata:', subsRes.error);
+                Alert.alert('Veri Hatası', 'Abonelik verileri çekilemedi: ' + subsRes.error.message);
                 setLoading(false);
                 return;
             }
 
-            const rows = statsRes.data || [];
+            const subs = subsRes.data || [];
 
-            const result: CompanyLimit[] = rows.map((r: any) => ({
-                subId:              r.subscription_id,
-                companyProfileId:   r.owner_profile_id,
-                companyName:        r.company_name || 'İsimsiz Firma',
-                email:              r.owner_email  || '—',
-                status:             r.subscription_status,
-                trialEndsAt:        r.trial_ends_at,
-                currentPeriodEnd:   r.current_period_end,
-                planId:             r.plan_id,
-                planName:           r.plan_name,
-                planBillingPeriod:  r.plan_billing_period,
-                maxOperators:       r.max_operators,
-                maxCustomers:       r.max_customers,
-                maxBranches:        r.max_branches,
-                maxWarehouses:      r.max_warehouses,
-                overrideOperators:  '',
-                overrideCustomers:  '',
-                overrideBranches:   '',
-                overrideWarehouses: '',
-                currentOperators:   r.current_operators,
-                currentCustomers:   r.current_customers,
-                currentBranches:    r.current_branches,
-                currentWarehouses:  r.current_warehouses,
-            }));
+            if (subs.length === 0) {
+                setCompanies([]);
+                setLoading(false);
+                return;
+            }
 
-            setCompanies(result);
-        } catch (e: any) {
-            console.error('Admin limits load error:', e);
-            Alert.alert('Hata', 'Beklenmeyen bir hata oluştu: ' + e.message);
-        } finally {
-            setLoading(false);
-        }
-    }, []);
+            // subscriptions.company_id → companies.id
+            const companyTableIds = [...new Set(subs.map((s: any) => s.company_id).filter(Boolean))];
+            const safeCompanyTableIds = companyTableIds.length > 0 ? companyTableIds : ['00000000-0000-0000-0000-000000000000'];
 
+            // 3) companies tablosunu çek → owner_id üzerinden profiles'a ulaşacağız
+            const companiesRes = await supabase
+                .from('companies')
+                .select('id, owner_id, name')
+                .in('id', safeCompanyTableIds);
+
+            if (companiesRes.error) console.error('Companies çekilemedi:', companiesRes.error);
+
+            const companiesData = companiesRes.data || [];
+            // company table id -> company row
+            const companyRowMap: Record<string, any> = {};
+            companiesData.forEach((c: any) => { companyRowMap[c.id] = c; });
+
+            // 4) Profilleri owner_id listesiyle çek
+            const ownerIds = [...new Set(companiesData.map((c: any) => c.owner_id).filter(Boolean))];
+            const safeOwnerIds = ownerIds.length > 0 ? ownerIds : ['00000000-0000-0000-0000-000000000000'];
+
+            const profilesRes = await supabase
+                .from('profiles')
+                .select('id, full_name, email, company_name')
+                .in('id', safeOwnerIds);
+
+            if (profilesRes.error) console.error('Profiller çekilemedi:', profilesRes.error);
+
+            const profileMap: Record<string, any> = {};
+            (profilesRes.data || []).forEach((p: any) => { profileMap[p.id] = p; });
+
+            // 5) Kullanım sayıları
+            // Hem companies.id hem owner profile.id bazında sorgula, hangisi dolu ise onu kullan
+            const [opByCompId, opByOwnId,
+                   custByCompId, custByOwnId,
+                   branchByCompId, branchByOwnId,
+                   adminWhCounts, whCounts] = await Promise.all([
+                // operators — company_id deneme: companies.id
+                supabase.from('operators').select('company_id').in('company_id', safeCompanyTableIds),
+                // operators — company_id deneme: owner profile.id
+                supabase.from('operators').select('company_id').in('company_id', safeOwnerIds),
+                // customers — created_by_company_id deneme: companies.id
+                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeCompanyTableIds),
+                // customers — created_by_company_id deneme: owner profile.id
+                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeOwnerIds),
+                // customer_branches — companies.id
+                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeCompanyTableIds),
+                // customer_branches — owner profile.id
+                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeOwnerIds),
+                // admin_warehouses → companies.id
+                supabase.from('admin_warehouses').select('company_id').in('company_id', safeCompanyTableIds),
+                // warehouses → profiles.id (owner)
+                supabase.from('warehouses').select('company_id').in('company_id', safeOwnerIds),
+            ]);
+
+            // Her iki key bazında count map oluştur
+            const opMapByComp   = buildCountMap((opByCompId.data || []).map((r: any) => r.company_id));
+            const opMapByOwner  = buildCountMap((opByOwnId.data || []).map((r: any) => r.company_id));
+            const custMapByComp = buildCountMap((custByCompId.data || []).map((r: any) => r.created_by_company_id));
+            const custMapByOwner= buildCountMap((custByOwnId.data || []).map((r: any) => r.created_by_company_id));
+            const brMapByComp   = buildCountMap((branchByCompId.data || []).map((r: any) => r.created_by_company_id));
+            const brMapByOwner  = buildCountMap((branchByOwnId.data || []).map((r: any) => r.created_by_company_id));
+            const adminWhMap    = buildCountMap((adminWhCounts.data || []).map((r: any) => r.company_id));
+            const whByOwner     = buildCountMap((whCounts.data || []).map((r: any) => r.company_id));
+
+            // 6) Birleştir
+            const result: CompanyLimit[] = subs.map((s: any) => {
+                const companyRow = companyRowMap[s.company_id];
+                const ownerId = companyRow?.owner_id || '';
+                const owner = ownerId ? profileMap[ownerId] : null;
+                const plan = s.plan_id ? planMap[s.plan_id] : null;
+
+                const effectiveOps    = s.max_operators  ?? plan?.max_operators  ?? TRIAL_DEFAULTS.max_operators;
+                const effectiveCust   = s.max_customers  ?? plan?.max_customers  ?? TRIAL_DEFAULTS.max_customers;
+                const effectiveBranch = s.max_branches   ?? plan?.max_branches   ?? TRIAL_DEFAULTS.max_branches;
+                const effectiveWh     = s.max_warehouses ?? plan?.max_warehouses ?? TRIAL_DEFAULTS.max_warehouses;
+
+                // Her alan için iki kaynaktan hangisi dolu ise onu al (toplam)
+                const currentOperators  = (opMapByComp[s.company_id] || 0) + (opMapByOwner[ownerId] || 0);
+                const currentCustomers  = (custMapByComp[s.company_id] || 0) + (custMapByOwner[ownerId] || 0);
+                const currentBranches   = (brMapByComp[s.company_id] || 0) + (brMapByOwner[ownerId] || 0);
+                const currentWarehouses = (adminWhMap[s.company_id] || 0) + (whByOwner[ownerId] || 0);
+
+                return {
+                    subId: s.id,
+                    companyProfileId: ownerId,
+                    companyName: owner?.company_name || companyRow?.name || owner?.full_name || 'İsimsiz Firma',
+                    email: owner?.email || '—',
+                    status: s.status,
+                    trialEndsAt: s.trial_ends_at,
+                    currentPeriodEnd: s.current_period_end,
+                    planId: s.plan_id,
+                    planName: plan?.name || null,
+                    planBillingPeriod: plan?.billing_period || null,
+                    maxOperators: effectiveOps,
+                    maxCustomers: effectiveCust,
+                    maxBranches: effectiveBranch,
+                    maxWarehouses: effectiveWh,
+                    overrideOperators:  s.max_operators?.toString()  || '',
+                    overrideCustomers:  s.max_customers?.toString()  || '',
+                    overrideBranches:   s.max_branches?.toString()   || '',
                     overrideWarehouses: s.max_warehouses?.toString() || '',
                     currentOperators,
                     currentCustomers,
