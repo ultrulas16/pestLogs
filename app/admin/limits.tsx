@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, TouchableOpacity,
-    ActivityIndicator, TextInput, Alert
+    ActivityIndicator, TextInput, Alert, useWindowDimensions
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
@@ -60,6 +60,7 @@ const STATUS_LABELS: Record<string, string> = {
 export default function AdminLimitsPage() {
     const router = useRouter();
     const { profile } = useAuth();
+    const { width } = useWindowDimensions();
 
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState<string | null>(null);
@@ -76,10 +77,10 @@ export default function AdminLimitsPage() {
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            // 1. Planları Çek
+            // SİZİN ÇALIŞAN VERİ ÇEKME KODUNUZ:
             const { data: planData, error: planErr } = await supabase
                 .from('subscription_plans')
-                .select('*')
+                .select('id, name, billing_period, price_weekly, price_monthly, price_yearly, max_operators, max_customers, max_branches, max_warehouses')
                 .eq('is_active', true)
                 .order('display_order');
 
@@ -89,100 +90,85 @@ export default function AdminLimitsPage() {
             const planMap: Record<string, SubscriptionPlan> = {};
             (planData || []).forEach((p: any) => { planMap[p.id] = p; });
 
-            // 2. Abonelikleri Çek
             const { data: subs, error: subErr } = await supabase
                 .from('subscriptions')
-                .select('*')
+                .select('id, company_id, status, trial_ends_at, current_period_end, plan_id, max_operators, max_customers, max_branches, max_warehouses')
                 .order('created_at', { ascending: false });
 
             if (subErr) { Alert.alert('Hata', subErr.message); setLoading(false); return; }
             if (!subs || subs.length === 0) { setCompanies([]); setLoading(false); return; }
 
-            // 3. Şirket ve Profil Eşleştirmesi
-            const profileIds = [...new Set(subs.map((s: any) => s.company_id).filter(Boolean))] as string[];
-            const safeProfileIds = profileIds.length > 0 ? profileIds : ['00000000-0000-0000-0000-000000000000'];
+            const companyIds = [...new Set(subs.map((s: any) => s.company_id).filter(Boolean))] as string[];
+            const safeCompanyIds = companyIds.length > 0 ? companyIds : ['00000000-0000-0000-0000-000000000000'];
 
             const { data: companiesData } = await supabase
                 .from('companies')
                 .select('id, owner_id, name')
-                .in('owner_id', safeProfileIds);
+                .in('id', safeCompanyIds);
 
-            const profileToCompanyMap: Record<string, any> = {};
-            const realCompanyIds: string[] = [];
-            (companiesData || []).forEach((c: any) => { 
-                profileToCompanyMap[c.owner_id] = c; 
-                if(c.id) realCompanyIds.push(c.id);
-            });
+            const companyMap: Record<string, any> = {};
+            (companiesData || []).forEach((c: any) => { companyMap[c.id] = c; });
 
-            const safeCompanyIds = realCompanyIds.length > 0 ? realCompanyIds : ['00000000-0000-0000-0000-000000000000'];
+            const ownerIds = [...new Set((companiesData || []).map((c: any) => c.owner_id).filter(Boolean))] as string[];
+            const safeOwnerIds = ownerIds.length > 0 ? ownerIds : ['00000000-0000-0000-0000-000000000000'];
 
-            // 4. Profil Bilgileri
             const { data: profilesData } = await supabase
                 .from('profiles')
                 .select('id, full_name, email, company_name')
-                .in('id', safeProfileIds);
+                .in('id', safeOwnerIds);
 
             const profileMap: Record<string, any> = {};
             (profilesData || []).forEach((p: any) => { profileMap[p.id] = p; });
 
-            // 5. KULLANIM VERİLERİNİ ÇEKME (OR SORGUSU İLE ÇİFT DİKİŞ)
-            const [opRes, custRes, brRes, whRes] = await Promise.all([
-                supabase.from('operators').select('company_id').or(`company_id.in.(${safeCompanyIds.join(',')}),company_id.in.(${safeProfileIds.join(',')})`),
-                supabase.from('customers').select('created_by_company_id').or(`created_by_company_id.in.(${safeCompanyIds.join(',')}),created_by_company_id.in.(${safeProfileIds.join(',')})`),
-                supabase.from('customer_branches').select('created_by_company_id').or(`created_by_company_id.in.(${safeCompanyIds.join(',')}),created_by_company_id.in.(${safeProfileIds.join(',')})`),
-                supabase.from('warehouses').select('company_id').or(`company_id.in.(${safeCompanyIds.join(',')}),company_id.in.(${safeProfileIds.join(',')})`),
+            const [opRes, custRes, brRes, adminWhRes, whRes] = await Promise.all([
+                supabase.from('operators').select('company_id').in('company_id', safeCompanyIds),
+                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeCompanyIds),
+                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeCompanyIds),
+                supabase.from('admin_warehouses').select('company_id').in('company_id', safeCompanyIds),
+                supabase.from('warehouses').select('company_id').in('company_id', safeOwnerIds),
             ]);
 
-            // Güvenli Sayma Fonksiyonu
-            const getCounts = (data: any[], key: string) => {
+            const countBy = (arr: any[], key: string): Record<string, number> => {
                 const map: Record<string, number> = {};
-                (data || []).forEach(r => { if (r[key]) map[r[key]] = (map[r[key]] || 0) + 1; });
+                (arr || []).forEach((r: any) => { if (r[key]) map[r[key]] = (map[r[key]] || 0) + 1; });
                 return map;
             };
 
-            const opCounts = getCounts(opRes.data, 'company_id');
-            const custCounts = getCounts(custRes.data, 'created_by_company_id');
-            const brCounts = getCounts(brRes.data, 'created_by_company_id');
-            const whCounts = getCounts(whRes.data, 'company_id');
+            const opCount      = countBy(opRes.data      || [], 'company_id');
+            const custCount    = countBy(custRes.data    || [], 'created_by_company_id');
+            const brCount      = countBy(brRes.data      || [], 'created_by_company_id');
+            const adminWhCount = countBy(adminWhRes.data || [], 'company_id');
+            const whCount      = countBy(whRes.data      || [], 'company_id');
 
-            // 6. Verileri Birleştir
             const result: CompanyLimit[] = subs.map((s: any) => {
-                const pId = s.company_id;
-                const co = profileToCompanyMap[pId];
-                const realCoId = co?.id;
-                const own = profileMap[pId];
+                const co   = companyMap[s.company_id];
+                const own  = co ? profileMap[co.owner_id] : null;
                 const plan = s.plan_id ? planMap[s.plan_id] : null;
 
-                // Hem profile_id hem real_company_id üzerinden gelenleri topla
-                const currentOps = (opCounts[pId] || 0) + (realCoId ? (opCounts[realCoId] || 0) : 0);
-                const currentCusts = (custCounts[pId] || 0) + (realCoId ? (custCounts[realCoId] || 0) : 0);
-                const currentBrs = (brCounts[pId] || 0) + (realCoId ? (brCounts[realCoId] || 0) : 0);
-                const currentWhs = (whCounts[pId] || 0) + (realCoId ? (whCounts[realCoId] || 0) : 0);
-
                 return {
-                    subId: s.id,
-                    companyId: realCoId || '',
-                    companyProfileId: pId || '',
-                    companyName: co?.name || own?.company_name || own?.full_name || 'İsimsiz Firma',
-                    email: own?.email || '—',
-                    status: s.status,
-                    trialEndsAt: s.trial_ends_at,
-                    currentPeriodEnd: s.current_period_end,
-                    planId: s.plan_id,
-                    planName: plan?.name || null,
+                    subId:             s.id,
+                    companyId:         s.company_id,
+                    companyProfileId:  co?.owner_id || '',
+                    companyName:       own?.company_name || co?.name || own?.full_name || 'İsimsiz Firma',
+                    email:             own?.email || '—',
+                    status:            s.status,
+                    trialEndsAt:       s.trial_ends_at,
+                    currentPeriodEnd:  s.current_period_end,
+                    planId:            s.plan_id,
+                    planName:          plan?.name || null,
                     planBillingPeriod: plan?.billing_period || null,
-                    maxOperators: s.max_operators ?? plan?.max_operators ?? 1,
-                    maxCustomers: s.max_customers ?? plan?.max_customers ?? 3,
-                    maxBranches: s.max_branches ?? plan?.max_branches ?? 3,
-                    maxWarehouses: s.max_warehouses ?? plan?.max_warehouses ?? 2,
-                    overrideOperators: s.max_operators?.toString() || '',
-                    overrideCustomers: s.max_customers?.toString() || '',
-                    overrideBranches: s.max_branches?.toString() || '',
+                    maxOperators:      s.max_operators  ?? plan?.max_operators  ?? 1,
+                    maxCustomers:      s.max_customers  ?? plan?.max_customers  ?? 3,
+                    maxBranches:       s.max_branches   ?? plan?.max_branches   ?? 3,
+                    maxWarehouses:     s.max_warehouses ?? plan?.max_warehouses ?? 2,
+                    overrideOperators:  s.max_operators?.toString()  || '',
+                    overrideCustomers:  s.max_customers?.toString()  || '',
+                    overrideBranches:   s.max_branches?.toString()   || '',
                     overrideWarehouses: s.max_warehouses?.toString() || '',
-                    currentOperators: currentOps,
-                    currentCustomers: currentCusts,
-                    currentBranches: currentBrs,
-                    currentWarehouses: currentWhs,
+                    currentOperators:  opCount[s.company_id]      || 0,
+                    currentCustomers:  custCount[s.company_id]    || 0,
+                    currentBranches:   brCount[s.company_id]      || 0,
+                    currentWarehouses: (adminWhCount[s.company_id] || 0) + (whCount[co?.owner_id] || 0),
                 };
             });
 
@@ -213,14 +199,14 @@ export default function AdminLimitsPage() {
             const { error } = await supabase
                 .from('subscriptions')
                 .update({
-                    plan_id: company.planId || null,
-                    max_operators: company.overrideOperators ? parseInt(company.overrideOperators) : null,
-                    max_customers: company.overrideCustomers ? parseInt(company.overrideCustomers) : null,
-                    max_branches: company.overrideBranches ? parseInt(company.overrideBranches) : null,
-                    max_warehouses: company.overrideWarehouses ? parseInt(company.overrideWarehouses) : null,
+                    plan_id:            company.planId || null,
+                    max_operators:      company.overrideOperators  ? parseInt(company.overrideOperators)  : null,
+                    max_customers:      company.overrideCustomers  ? parseInt(company.overrideCustomers)  : null,
+                    max_branches:       company.overrideBranches   ? parseInt(company.overrideBranches)   : null,
+                    max_warehouses:     company.overrideWarehouses ? parseInt(company.overrideWarehouses) : null,
                     current_period_end: newPeriodEnd,
-                    status: company.planId ? 'active' : company.status,
-                    updated_at: new Date().toISOString(),
+                    status:             company.planId ? 'active' : company.status,
+                    updated_at:         new Date().toISOString(),
                 })
                 .eq('id', company.subId);
 
@@ -271,10 +257,10 @@ export default function AdminLimitsPage() {
             <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
                 <View style={styles.statsRow}>
                     {[
-                        { label: 'Toplam', val: companies.length, color: '#1e293b' },
-                        { label: 'Aktif', val: companies.filter(c => c.status === 'active').length, color: '#10b981' },
-                        { label: 'Deneme', val: companies.filter(c => c.status === 'trial').length, color: '#f59e0b' },
-                        { label: 'Doldu', val: companies.filter(c => c.status === 'expired').length, color: '#ef4444' },
+                        { label: 'Toplam', val: companies.length,                                          color: '#1e293b' },
+                        { label: 'Aktif',  val: companies.filter(c => c.status === 'active').length,       color: '#10b981' },
+                        { label: 'Deneme', val: companies.filter(c => c.status === 'trial').length,        color: '#f59e0b' },
+                        { label: 'Doldu',  val: companies.filter(c => c.status === 'expired').length,      color: '#ef4444' },
                     ].map(s => (
                         <View key={s.label} style={styles.statBox}>
                             <Text style={[styles.statNum, { color: s.color }]}>{s.val}</Text>
@@ -306,7 +292,14 @@ export default function AdminLimitsPage() {
                                             <View style={styles.planBadge}>
                                                 <Text style={styles.planBadgeText}>
                                                     {company.planName}
-                                                    {company.planBillingPeriod === 'weekly' ? ' · Hf' : company.planBillingPeriod === 'yearly' ? ' · Yıl' : ' · Ay'}
+                                                    {company.planBillingPeriod === 'weekly' ? ' · Haftalık' : company.planBillingPeriod === 'yearly' ? ' · Yıllık' : ' · Aylık'}
+                                                </Text>
+                                            </View>
+                                        ) : null}
+                                        {company.currentPeriodEnd ? (
+                                            <View style={styles.dateBadge}>
+                                                <Text style={styles.dateBadgeText}>
+                                                    Bitiş: {new Date(company.currentPeriodEnd).toLocaleDateString('tr-TR')}
                                                 </Text>
                                             </View>
                                         ) : null}
@@ -334,6 +327,7 @@ export default function AdminLimitsPage() {
                                             onPress={() => updateField(company.subId, 'planId', '')}
                                         >
                                             <Text style={[styles.planChipText, !company.planId && styles.planChipTextActive]}>Deneme</Text>
+                                            <Text style={[styles.planChipSub, !company.planId && { color: '#fff' }]}>7 Gün</Text>
                                         </TouchableOpacity>
                                         {plans.map(p => (
                                             <TouchableOpacity
@@ -342,32 +336,78 @@ export default function AdminLimitsPage() {
                                                 onPress={() => updateField(company.subId, 'planId', p.id)}
                                             >
                                                 <Text style={[styles.planChipText, company.planId === p.id && styles.planChipTextActive]}>{p.name}</Text>
+                                                <Text style={[styles.planChipSub, company.planId === p.id && { color: '#fff' }]}>
+                                                    {p.billing_period === 'weekly' ? p.price_weekly.toFixed(0) + '₺/Hf'
+                                                     : p.billing_period === 'yearly' ? p.price_yearly.toFixed(0) + '₺/Yıl'
+                                                     : p.price_monthly.toFixed(0) + '₺/Ay'}
+                                                </Text>
                                             </TouchableOpacity>
                                         ))}
                                     </ScrollView>
 
-                                    <Text style={styles.sectionTitle}>Limit Düzenleme</Text>
+                                    {company.planId ? (() => {
+                                        const sel = plans.find(p => p.id === company.planId);
+                                        if (!sel) return null;
+                                        return (
+                                            <View style={styles.planPreviewBox}>
+                                                <Text style={styles.planPreviewTitle}>
+                                                    {sel.name} — {sel.billing_period === 'weekly' ? 'Haftalık' : sel.billing_period === 'yearly' ? 'Yıllık' : 'Aylık'}
+                                                </Text>
+                                                <View style={styles.planPreviewLimits}>
+                                                    {[
+                                                        { label: 'Operatör', value: sel.max_operators },
+                                                        { label: 'Müşteri',  value: sel.max_customers },
+                                                        { label: 'Şube',     value: sel.max_branches },
+                                                        { label: 'Depo',     value: sel.max_warehouses },
+                                                    ].map(item => (
+                                                        <View key={item.label} style={styles.planPreviewChip}>
+                                                            <Text style={styles.planPreviewNum}>{item.value}</Text>
+                                                            <Text style={styles.planPreviewLabel}>{item.label}</Text>
+                                                        </View>
+                                                    ))}
+                                                </View>
+                                            </View>
+                                        );
+                                    })() : null}
+
+                                    <Text style={styles.sectionTitle}>
+                                        Özel Limitler <Text style={styles.sectionHint}>(boş = plan/deneme varsayılanı)</Text>
+                                    </Text>
+
                                     <View style={styles.limitsGrid}>
                                         {[
-                                            { field: 'overrideOperators' as const, label: 'Operatör', icon: Users, current: company.currentOperators, max: company.maxOperators, color: '#10b981' },
-                                            { field: 'overrideCustomers' as const, label: 'Müşteri', icon: Building2, current: company.currentCustomers, max: company.maxCustomers, color: '#3b82f6' },
-                                            { field: 'overrideBranches' as const, label: 'Şube', icon: GitBranch, current: company.currentBranches, max: company.maxBranches, color: '#f59e0b' },
-                                            { field: 'overrideWarehouses' as const, label: 'Depo', icon: Warehouse, current: company.currentWarehouses, max: company.maxWarehouses, color: '#f97316' },
+                                            { field: 'overrideOperators'  as const, label: 'Operatör', icon: Users,     current: company.currentOperators,  max: company.maxOperators,  color: '#10b981' },
+                                            { field: 'overrideCustomers'  as const, label: 'Müşteri',  icon: Building2, current: company.currentCustomers,  max: company.maxCustomers,  color: '#3b82f6' },
+                                            { field: 'overrideBranches'   as const, label: 'Şube',     icon: GitBranch, current: company.currentBranches,   max: company.maxBranches,   color: '#f59e0b' },
+                                            { field: 'overrideWarehouses' as const, label: 'Depo',     icon: Warehouse, current: company.currentWarehouses, max: company.maxWarehouses, color: '#f97316' },
                                         ].map(item => {
                                             const Icon = item.icon;
+                                            
+                                            // SİZİN ÇALIŞAN KODUNUZA GRAFİK (PROGRESS BAR) EKLENDİĞİ YER:
+                                            const pct = item.max > 0 ? Math.min((item.current / item.max) * 100, 100) : 0;
+                                            const barColor = pct >= 100 ? '#ef4444' : pct >= 80 ? '#f59e0b' : item.color;
+                                            
                                             return (
                                                 <View key={item.field} style={styles.limitCard}>
                                                     <View style={styles.limitCardTop}>
-                                                        <Icon size={14} color={item.color} />
+                                                        <View style={[styles.limitIcon, { backgroundColor: item.color + '15' }]}>
+                                                            <Icon size={14} color={item.color} />
+                                                        </View>
                                                         <Text style={styles.limitLabel}>{item.label}</Text>
-                                                        <Text style={styles.limitCount}>{item.current}/{item.max}</Text>
+                                                        <Text style={[styles.limitCount, pct >= 100 && { color: '#ef4444' }]}>
+                                                            {item.current}/{item.max}
+                                                        </Text>
+                                                    </View>
+                                                    <View style={styles.barTrack}>
+                                                        <View style={[styles.barFill, { width: `${pct}%` as any, backgroundColor: barColor }]} />
                                                     </View>
                                                     <TextInput
                                                         style={styles.limitInput}
                                                         value={(company as any)[item.field]}
                                                         onChangeText={v => updateField(company.subId, item.field, v)}
                                                         keyboardType="numeric"
-                                                        placeholder={item.max.toString()}
+                                                        placeholder={`Limit (şu an: ${item.max})`}
+                                                        placeholderTextColor="#94a3b8"
                                                     />
                                                 </View>
                                             );
@@ -389,6 +429,12 @@ export default function AdminLimitsPage() {
                         </View>
                     );
                 })}
+
+                {filtered.length === 0 ? (
+                    <View style={styles.emptyBox}>
+                        <Text style={styles.emptyText}>Firma bulunamadı</Text>
+                    </View>
+                ) : null}
                 <View style={{ height: 100 }} />
             </ScrollView>
         </View>
@@ -408,34 +454,49 @@ const styles = StyleSheet.create({
     statBox: { flex: 1, backgroundColor: '#fff', borderRadius: 12, padding: 12, alignItems: 'center', borderWidth: 1, borderColor: '#e2e8f0' },
     statNum: { fontSize: 20, fontWeight: '800', color: '#1e293b' },
     statLabel: { fontSize: 11, color: '#94a3b8', marginTop: 2 },
-    card: { backgroundColor: '#fff', borderRadius: 14, marginBottom: 12, borderWidth: 1, borderColor: '#e2e8f0', elevation: 1, overflow: 'hidden' },
+    card: { backgroundColor: '#fff', borderRadius: 14, marginBottom: 12, borderWidth: 1, borderColor: '#e2e8f0', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1, overflow: 'hidden' },
     cardHeader: { flexDirection: 'row', alignItems: 'center', padding: 14, gap: 10 },
     cardHeaderLeft: { flex: 1 },
     cardName: { fontSize: 15, fontWeight: '700', color: '#1e293b', marginBottom: 2 },
     cardEmail: { fontSize: 12, color: '#94a3b8', marginBottom: 6 },
-    badgeRow: { flexDirection: 'row', gap: 6 },
+    badgeRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
     statusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
     statusBadgeText: { fontSize: 11, fontWeight: '700' },
     planBadge: { backgroundColor: '#f0fdf4', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#bbf7d0' },
     planBadgeText: { fontSize: 11, fontWeight: '600', color: '#15803d' },
+    dateBadge: { backgroundColor: '#f0f9ff', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#bae6fd' },
+    dateBadgeText: { fontSize: 11, fontWeight: '600', color: '#0369a1' },
     cardHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     miniLimits: { alignItems: 'center' },
     miniLimit: { fontSize: 13, fontWeight: '700', color: '#334155' },
     miniLimitLabel: { fontSize: 10, color: '#94a3b8' },
     cardBody: { borderTopWidth: 1, borderTopColor: '#f1f5f9', padding: 14, gap: 12 },
     sectionTitle: { fontSize: 13, fontWeight: '700', color: '#374151' },
+    sectionHint: { fontSize: 11, fontWeight: '400', color: '#94a3b8' },
     planScroll: { marginBottom: 4 },
     planChip: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, marginRight: 8, borderWidth: 1.5, borderColor: '#e2e8f0', backgroundColor: '#fff' },
     planChipActive: { backgroundColor: '#10b981', borderColor: '#10b981' },
     planChipText: { fontSize: 13, fontWeight: '600', color: '#64748b' },
     planChipTextActive: { color: '#fff' },
+    planChipSub: { fontSize: 10, color: '#94a3b8', marginTop: 2 },
+    planPreviewBox: { backgroundColor: '#f0fdf4', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#bbf7d0', marginBottom: 4 },
+    planPreviewTitle: { fontSize: 12, fontWeight: '700', color: '#15803d', marginBottom: 8 },
+    planPreviewLimits: { flexDirection: 'row', gap: 8 },
+    planPreviewChip: { flex: 1, backgroundColor: '#fff', borderRadius: 8, padding: 6, alignItems: 'center', borderWidth: 1, borderColor: '#bbf7d0' },
+    planPreviewNum: { fontSize: 15, fontWeight: '800', color: '#15803d' },
+    planPreviewLabel: { fontSize: 10, color: '#64748b', marginTop: 1 },
     limitsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
     limitCard: { width: '47%', backgroundColor: '#f8fafc', borderRadius: 10, padding: 10, gap: 6, borderWidth: 1, borderColor: '#e2e8f0' },
     limitCardTop: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    limitIcon: { width: 24, height: 24, borderRadius: 6, justifyContent: 'center', alignItems: 'center' },
     limitLabel: { flex: 1, fontSize: 12, fontWeight: '600', color: '#475569' },
-    limitCount: { fontSize: 11, fontWeight: '700', color: '#334155' },
+    limitCount: { fontSize: 12, fontWeight: '700', color: '#334155' },
+    barTrack: { height: 4, backgroundColor: '#e2e8f0', borderRadius: 2, overflow: 'hidden' },
+    barFill: { height: 4, borderRadius: 2 },
     limitInput: { backgroundColor: '#fff', borderRadius: 7, paddingHorizontal: 10, paddingVertical: 7, fontSize: 13, borderWidth: 1, borderColor: '#e2e8f0', color: '#1e293b' },
     saveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#10b981', borderRadius: 10, paddingVertical: 12, marginTop: 4 },
     saveBtnDisabled: { backgroundColor: '#6ee7b7' },
     saveBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+    emptyBox: { alignItems: 'center', paddingVertical: 48 },
+    emptyText: { fontSize: 14, color: '#94a3b8' },
 });
