@@ -152,30 +152,41 @@ export default function AdminLimitsPage() {
             const profileMap: Record<string, any> = {};
             (profilesRes.data || []).forEach((p: any) => { profileMap[p.id] = p; });
 
-            // 5) Kullanım sayıları — company_id = companies.id (safeCompanyTableIds)
-            //    customers/branches created_by_company_id = owner profile id (safeOwnerIds)
-            const [opCounts, custCounts, branchCounts, whCounts] = await Promise.all([
+            // 5) Kullanım sayıları
+            // operators.company_id              → companies.id
+            // customers.created_by_company_id   → companies.id
+            // customer_branches.created_by_company_id → companies.id
+            // admin_warehouses.company_id        → companies.id (şirket ana depoları)
+            // warehouses.company_id              → profiles.id  (operatör depoları)
+            const [opCounts, custCounts, branchCounts, adminWhCounts, whCounts] = await Promise.all([
                 supabase.from('operators').select('company_id').in('company_id', safeCompanyTableIds),
-                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeOwnerIds),
-                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeOwnerIds),
-                supabase.from('warehouses').select('company_id').in('company_id', safeCompanyTableIds),
+                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeCompanyTableIds),
+                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeCompanyTableIds),
+                supabase.from('admin_warehouses').select('company_id').in('company_id', safeCompanyTableIds),
+                supabase.from('warehouses').select('company_id').in('company_id', safeOwnerIds),
             ]);
 
-            const opByCompany = buildCountMap((opCounts.data || []).map((r: any) => r.company_id));
-            const whByCompany = buildCountMap((whCounts.data || []).map((r: any) => r.company_id));
-            const custByOwner = buildCountMap((custCounts.data || []).map((r: any) => r.created_by_company_id));
-            const branchByOwner = buildCountMap((branchCounts.data || []).map((r: any) => r.created_by_company_id));
+            const opByCompany      = buildCountMap((opCounts.data || []).map((r: any) => r.company_id));
+            const custByCompany    = buildCountMap((custCounts.data || []).map((r: any) => r.created_by_company_id));
+            const branchByCompany  = buildCountMap((branchCounts.data || []).map((r: any) => r.created_by_company_id));
+            const adminWhByCompany = buildCountMap((adminWhCounts.data || []).map((r: any) => r.company_id));
+            const whByOwner        = buildCountMap((whCounts.data || []).map((r: any) => r.company_id));
 
             // 6) Birleştir
             const result: CompanyLimit[] = subs.map((s: any) => {
-                const companyRow = companyRowMap[s.company_id];          // companies kaydı
-                const owner = companyRow ? profileMap[companyRow.owner_id] : null; // profil
+                const companyRow = companyRowMap[s.company_id];
+                const owner = companyRow ? profileMap[companyRow.owner_id] : null;
                 const plan = s.plan_id ? planMap[s.plan_id] : null;
 
-                const effectiveOps = s.max_operators ?? plan?.max_operators ?? TRIAL_DEFAULTS.max_operators;
-                const effectiveCust = s.max_customers ?? plan?.max_customers ?? TRIAL_DEFAULTS.max_customers;
-                const effectiveBranch = s.max_branches ?? plan?.max_branches ?? TRIAL_DEFAULTS.max_branches;
-                const effectiveWh = s.max_warehouses ?? plan?.max_warehouses ?? TRIAL_DEFAULTS.max_warehouses;
+                const effectiveOps    = s.max_operators  ?? plan?.max_operators  ?? TRIAL_DEFAULTS.max_operators;
+                const effectiveCust   = s.max_customers  ?? plan?.max_customers  ?? TRIAL_DEFAULTS.max_customers;
+                const effectiveBranch = s.max_branches   ?? plan?.max_branches   ?? TRIAL_DEFAULTS.max_branches;
+                const effectiveWh     = s.max_warehouses ?? plan?.max_warehouses ?? TRIAL_DEFAULTS.max_warehouses;
+
+                // Depo: admin_warehouses (companies.id) + warehouses (profiles.id) toplamı
+                const totalWarehouses =
+                    (adminWhByCompany[s.company_id] || 0) +
+                    (whByOwner[companyRow?.owner_id] || 0);
 
                 return {
                     subId: s.id,
@@ -192,16 +203,17 @@ export default function AdminLimitsPage() {
                     maxCustomers: effectiveCust,
                     maxBranches: effectiveBranch,
                     maxWarehouses: effectiveWh,
-                    overrideOperators: s.max_operators?.toString() || '',
-                    overrideCustomers: s.max_customers?.toString() || '',
-                    overrideBranches: s.max_branches?.toString() || '',
+                    overrideOperators:  s.max_operators?.toString()  || '',
+                    overrideCustomers:  s.max_customers?.toString()  || '',
+                    overrideBranches:   s.max_branches?.toString()   || '',
                     overrideWarehouses: s.max_warehouses?.toString() || '',
-                    currentOperators: opByCompany[s.company_id] || 0,
-                    currentCustomers: custByOwner[companyRow?.owner_id] || 0,
-                    currentBranches: branchByOwner[companyRow?.owner_id] || 0,
-                    currentWarehouses: whByCompany[s.company_id] || 0,
+                    currentOperators:  opByCompany[s.company_id]     || 0,
+                    currentCustomers:  custByCompany[s.company_id]   || 0,
+                    currentBranches:   branchByCompany[s.company_id] || 0,
+                    currentWarehouses: totalWarehouses,
                 };
             });
+
 
             setCompanies(result);
         } catch (e: any) {
