@@ -121,52 +121,61 @@ export default function AdminLimitsPage() {
                 return;
             }
 
-            // 3) Profilleri ayrı çek (company_id = profile id)
+            // 3) Profilleri ve Şirketleri (companies) aynı anda çek
             const companyProfileIds = [...new Set(subs.map((s: any) => s.company_id).filter(Boolean))];
+            const safeProfileIds = companyProfileIds.length > 0 ? companyProfileIds : ['00000000-0000-0000-0000-000000000000'];
 
-            const profilesRes = await supabase
-                .from('profiles')
-                .select('id, full_name, email, company_name')
-                .in('id', companyProfileIds);
-
-            if (profilesRes.error) console.error('Profiller çekilemedi:', profilesRes.error);
+            const [profilesRes, companiesRes] = await Promise.all([
+                supabase.from('profiles').select('id, full_name, email, company_name').in('id', safeProfileIds),
+                supabase.from('companies').select('id, owner_id, name').in('owner_id', safeProfileIds)
+            ]);
 
             const profileMap: Record<string, any> = {};
             (profilesRes.data || []).forEach((p: any) => { profileMap[p.id] = p; });
 
-            // 4) Mevcut kullanım sayıları
-            const safeProfileIds = companyProfileIds.length > 0 ? companyProfileIds : ['00000000-0000-0000-0000-000000000000'];
-            const tableIds = await getCompanyTableIds(safeProfileIds);
+            const companyTableMap: Record<string, any> = {}; // owner_id üzerinden eşleşecek
+            const tableIds: string[] = []; // Gerçek companies.id'ler
+
+            (companiesRes.data || []).forEach((c: any) => { 
+                companyTableMap[c.owner_id] = c; 
+                if(c.id) tableIds.push(c.id);
+            });
+
+            // 4) Mevcut kullanım sayıları - ARTIK HEPSİ İÇİN GERÇEK COMPANY ID (safeTableIds) KULLANILIYOR
             const safeTableIds = tableIds.length > 0 ? tableIds : ['00000000-0000-0000-0000-000000000000'];
 
             const [opCounts, custCounts, branchCounts, whCounts] = await Promise.all([
                 supabase.from('operators').select('company_id').in('company_id', safeTableIds),
-                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeProfileIds),
-                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeProfileIds),
+                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeTableIds),
+                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeTableIds),
                 supabase.from('warehouses').select('company_id').in('company_id', safeTableIds),
             ]);
 
-            const custByOwner = buildCountMap((custCounts.data || []).map((r: any) => r.created_by_company_id));
-            const branchByOwner = buildCountMap((branchCounts.data || []).map((r: any) => r.created_by_company_id));
-            const companyTableMap = await getCompanyTableMap(safeProfileIds);
             const opByTable = buildCountMap((opCounts.data || []).map((r: any) => r.company_id));
+            const custByTable = buildCountMap((custCounts.data || []).map((r: any) => r.created_by_company_id));
+            const branchByTable = buildCountMap((branchCounts.data || []).map((r: any) => r.created_by_company_id));
             const whByTable = buildCountMap((whCounts.data || []).map((r: any) => r.company_id));
 
             // 5) Birleştir
             const result: CompanyLimit[] = subs.map((s: any) => {
                 const owner = profileMap[s.company_id];
+                const companyRecord = companyTableMap[s.company_id]; // Companies tablosundaki veri
+                const tableId = companyRecord?.id || ''; // Gerçek companies ID'si
+
                 const plan = s.plan_id ? planMap[s.plan_id] : null;
-                const tableId = companyTableMap[s.company_id] || '';
 
                 const effectiveOps = s.max_operators ?? plan?.max_operators ?? TRIAL_DEFAULTS.max_operators;
                 const effectiveCust = s.max_customers ?? plan?.max_customers ?? TRIAL_DEFAULTS.max_customers;
                 const effectiveBranch = s.max_branches ?? plan?.max_branches ?? TRIAL_DEFAULTS.max_branches;
                 const effectiveWh = s.max_warehouses ?? plan?.max_warehouses ?? TRIAL_DEFAULTS.max_warehouses;
 
+                // Firma adını öncelikli olarak companies tablosundan (name), yoksa profiles tablosundan al
+                const finalCompanyName = companyRecord?.name || owner?.company_name || owner?.full_name || 'İsimsiz Firma';
+
                 return {
                     subId: s.id,
                     companyProfileId: s.company_id || '',
-                    companyName: owner?.company_name || owner?.full_name || 'İsimsiz Firma',
+                    companyName: finalCompanyName,
                     email: owner?.email || '—',
                     status: s.status,
                     trialEndsAt: s.trial_ends_at,
@@ -182,9 +191,10 @@ export default function AdminLimitsPage() {
                     overrideCustomers: s.max_customers?.toString() || '',
                     overrideBranches: s.max_branches?.toString() || '',
                     overrideWarehouses: s.max_warehouses?.toString() || '',
+                    // Artık s.company_id (profile id) değil, gerçek veritabanı ID'si (tableId) kullanılıyor
                     currentOperators: opByTable[tableId] || 0,
-                    currentCustomers: custByOwner[s.company_id] || 0,
-                    currentBranches: branchByOwner[s.company_id] || 0,
+                    currentCustomers: custByTable[tableId] || 0,
+                    currentBranches: branchByTable[tableId] || 0,
                     currentWarehouses: whByTable[tableId] || 0,
                 };
             });
@@ -197,22 +207,6 @@ export default function AdminLimitsPage() {
             setLoading(false);
         }
     }, []);
-
-    const getCompanyTableIds = async (profileIds: string[]): Promise<string[]> => {
-        if (!profileIds || !profileIds.length) return ['00000000-0000-0000-0000-000000000000'];
-        const { data, error } = await supabase.from('companies').select('id').in('owner_id', profileIds);
-        if (error) console.error("Companies fetch error:", error);
-        const ids = (data || []).map((c: any) => c.id);
-        return ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000'];
-    };
-
-    const getCompanyTableMap = async (profileIds: string[]): Promise<Record<string, string>> => {
-        if (!profileIds || !profileIds.length) return {};
-        const { data } = await supabase.from('companies').select('id, owner_id').in('owner_id', profileIds);
-        const map: Record<string, string> = {};
-        (data || []).forEach((c: any) => { map[c.owner_id] = c.id; });
-        return map;
-    };
 
     const buildCountMap = (ids: string[]): Record<string, number> => {
         const map: Record<string, number> = {};
