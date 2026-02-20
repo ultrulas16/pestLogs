@@ -92,18 +92,18 @@ export default function AdminLimitsPage() {
                 .eq('is_active', true)
                 .order('display_order');
 
-            if (plansRes.error) console.error('Planları çekerken hata:', plansRes.error);
             const planList: SubscriptionPlan[] = plansRes.data || [];
             setPlans(planList);
-
-            // Plan map: id -> plan
             const planMap: Record<string, SubscriptionPlan> = {};
             planList.forEach(p => { planMap[p.id] = p; });
 
-            // 2) Abonelikleri çek (join YOK)
+            // 2) Abonelikleri ve İsim için Profil tablosunu çek
             const subsRes = await supabase
                 .from('subscriptions')
-                .select('id, company_id, status, trial_ends_at, current_period_end, plan_id, max_operators, max_customers, max_branches, max_warehouses')
+                .select(`
+                    id, company_id, status, trial_ends_at, current_period_end, plan_id, max_operators, max_customers, max_branches, max_warehouses,
+                    owner:profiles!subscriptions_company_id_fkey(id, full_name, email, company_name)
+                `)
                 .order('created_at', { ascending: false });
 
             if (subsRes.error) {
@@ -114,100 +114,92 @@ export default function AdminLimitsPage() {
             }
 
             const subs = subsRes.data || [];
-
             if (subs.length === 0) {
                 setCompanies([]);
                 setLoading(false);
                 return;
             }
 
-            // subscriptions.company_id → companies.id
-            const companyTableIds = [...new Set(subs.map((s: any) => s.company_id).filter(Boolean))];
-            const safeCompanyTableIds = companyTableIds.length > 0 ? companyTableIds : ['00000000-0000-0000-0000-000000000000'];
+            // 3) Profile ID'leri topla ve Gerçek Şirketleri (Companies) bul
+            const profileIds = subs.map((s: any) => s.company_id).filter(Boolean);
+            const safeProfileIds = profileIds.length > 0 ? profileIds : ['00000000-0000-0000-0000-000000000000'];
 
-            // 3) companies tablosunu çek → owner_id üzerinden profiles'a ulaşacağız
             const companiesRes = await supabase
                 .from('companies')
                 .select('id, owner_id, name')
-                .in('id', safeCompanyTableIds);
+                .in('owner_id', safeProfileIds);
 
-            if (companiesRes.error) console.error('Companies çekilemedi:', companiesRes.error);
+            const companyTableMap: Record<string, any> = {};
+            const companyIds: string[] = [];
+            
+            (companiesRes.data || []).forEach((c: any) => {
+                companyTableMap[c.owner_id] = c; // profile_id -> company objesi
+                companyIds.push(c.id);
+            });
 
-            const companiesData = companiesRes.data || [];
-            // company table id -> company row
-            const companyRowMap: Record<string, any> = {};
-            companiesData.forEach((c: any) => { companyRowMap[c.id] = c; });
+            // 4) Limit doluluklarını güvenli ve eksiksiz çekmek için ÇİFT SORGULAMA yapıyoruz
+            // Bazı tablolar profile.id ile, bazıları companies.id ile kayıtlı olabilir. İkisini de çekip toplayacağız.
+            const safeCompanyIds = companyIds.length > 0 ? companyIds : ['00000000-0000-0000-0000-000000000000'];
 
-            // 4) Profilleri owner_id listesiyle çek
-            const ownerIds = [...new Set(companiesData.map((c: any) => c.owner_id).filter(Boolean))];
-            const safeOwnerIds = ownerIds.length > 0 ? ownerIds : ['00000000-0000-0000-0000-000000000000'];
-
-            const profilesRes = await supabase
-                .from('profiles')
-                .select('id, full_name, email, company_name')
-                .in('id', safeOwnerIds);
-
-            if (profilesRes.error) console.error('Profiller çekilemedi:', profilesRes.error);
-
-            const profileMap: Record<string, any> = {};
-            (profilesRes.data || []).forEach((p: any) => { profileMap[p.id] = p; });
-
-            // 5) Kullanım sayıları
-            // Hem companies.id hem owner profile.id bazında sorgula, hangisi dolu ise onu kullan
-            const [opByCompId, opByOwnId,
-                   custByCompId, custByOwnId,
-                   branchByCompId, branchByOwnId,
-                   adminWhCounts, whCounts] = await Promise.all([
-                // operators — company_id deneme: companies.id
-                supabase.from('operators').select('company_id').in('company_id', safeCompanyTableIds),
-                // operators — company_id deneme: owner profile.id
-                supabase.from('operators').select('company_id').in('company_id', safeOwnerIds),
-                // customers — created_by_company_id deneme: companies.id
-                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeCompanyTableIds),
-                // customers — created_by_company_id deneme: owner profile.id
-                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeOwnerIds),
-                // customer_branches — companies.id
-                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeCompanyTableIds),
-                // customer_branches — owner profile.id
-                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeOwnerIds),
-                // admin_warehouses → companies.id
-                supabase.from('admin_warehouses').select('company_id').in('company_id', safeCompanyTableIds),
-                // warehouses → profiles.id (owner)
-                supabase.from('warehouses').select('company_id').in('company_id', safeOwnerIds),
+            const [
+                opComp, opProf,
+                custComp, custProf,
+                branchComp, branchProf,
+                whComp, whProf
+            ] = await Promise.all([
+                supabase.from('operators').select('company_id').in('company_id', safeCompanyIds),
+                supabase.from('operators').select('company_id').in('company_id', safeProfileIds),
+                
+                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeCompanyIds),
+                supabase.from('customers').select('created_by_company_id').in('created_by_company_id', safeProfileIds),
+                
+                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeCompanyIds),
+                supabase.from('customer_branches').select('created_by_company_id').in('created_by_company_id', safeProfileIds),
+                
+                supabase.from('warehouses').select('company_id').in('company_id', safeCompanyIds),
+                supabase.from('warehouses').select('company_id').in('company_id', safeProfileIds),
             ]);
 
-            // Her iki key bazında count map oluştur
-            const opMapByComp   = buildCountMap((opByCompId.data || []).map((r: any) => r.company_id));
-            const opMapByOwner  = buildCountMap((opByOwnId.data || []).map((r: any) => r.company_id));
-            const custMapByComp = buildCountMap((custByCompId.data || []).map((r: any) => r.created_by_company_id));
-            const custMapByOwner= buildCountMap((custByOwnId.data || []).map((r: any) => r.created_by_company_id));
-            const brMapByComp   = buildCountMap((branchByCompId.data || []).map((r: any) => r.created_by_company_id));
-            const brMapByOwner  = buildCountMap((branchByOwnId.data || []).map((r: any) => r.created_by_company_id));
-            const adminWhMap    = buildCountMap((adminWhCounts.data || []).map((r: any) => r.company_id));
-            const whByOwner     = buildCountMap((whCounts.data || []).map((r: any) => r.company_id));
+            // Haritalamaları kendi ID türlerine göre ayırıyoruz (Burası kritik!)
+            const opMapComp = buildCountMap((opComp.data || []).map((r: any) => r.company_id));
+            const opMapProf = buildCountMap((opProf.data || []).map((r: any) => r.company_id));
+            
+            const custMapComp = buildCountMap((custComp.data || []).map((r: any) => r.created_by_company_id));
+            const custMapProf = buildCountMap((custProf.data || []).map((r: any) => r.created_by_company_id));
+            
+            const branchMapComp = buildCountMap((branchComp.data || []).map((r: any) => r.created_by_company_id));
+            const branchMapProf = buildCountMap((branchProf.data || []).map((r: any) => r.created_by_company_id));
+            
+            const whMapComp = buildCountMap((whComp.data || []).map((r: any) => r.company_id));
+            const whMapProf = buildCountMap((whProf.data || []).map((r: any) => r.company_id));
 
-            // 6) Birleştir
+            // 5) Verileri Birleştir
             const result: CompanyLimit[] = subs.map((s: any) => {
-                const companyRow = companyRowMap[s.company_id];
-                const ownerId = companyRow?.owner_id || '';
-                const owner = ownerId ? profileMap[ownerId] : null;
+                const owner = Array.isArray(s.owner) ? s.owner[0] : s.owner;
+                const profileId = s.company_id; // Bu Profiles tablosunun ID'sidir
+                const companyData = companyTableMap[profileId]; 
+                const tableId = companyData?.id; // Bu Gerçek Companies tablosunun ID'sidir
+
                 const plan = s.plan_id ? planMap[s.plan_id] : null;
 
-                const effectiveOps    = s.max_operators  ?? plan?.max_operators  ?? TRIAL_DEFAULTS.max_operators;
-                const effectiveCust   = s.max_customers  ?? plan?.max_customers  ?? TRIAL_DEFAULTS.max_customers;
-                const effectiveBranch = s.max_branches   ?? plan?.max_branches   ?? TRIAL_DEFAULTS.max_branches;
-                const effectiveWh     = s.max_warehouses ?? plan?.max_warehouses ?? TRIAL_DEFAULTS.max_warehouses;
+                const effectiveOps = s.max_operators ?? plan?.max_operators ?? TRIAL_DEFAULTS.max_operators;
+                const effectiveCust = s.max_customers ?? plan?.max_customers ?? TRIAL_DEFAULTS.max_customers;
+                const effectiveBranch = s.max_branches ?? plan?.max_branches ?? TRIAL_DEFAULTS.max_branches;
+                const effectiveWh = s.max_warehouses ?? plan?.max_warehouses ?? TRIAL_DEFAULTS.max_warehouses;
 
-                // Her alan için iki kaynaktan hangisi dolu ise onu al (toplam)
-                const currentOperators  = (opMapByComp[s.company_id] || 0) + (opMapByOwner[ownerId] || 0);
-                const currentCustomers  = (custMapByComp[s.company_id] || 0) + (custMapByOwner[ownerId] || 0);
-                const currentBranches   = (brMapByComp[s.company_id] || 0) + (brMapByOwner[ownerId] || 0);
-                const currentWarehouses = (adminWhMap[s.company_id] || 0) + (whByOwner[ownerId] || 0);
+                // İsmi sırasıyla Companies tablosundan, yoksa Profiles(company_name), yoksa Profiles(full_name)'den alır.
+                const finalCompanyName = companyData?.name || owner?.company_name || owner?.full_name || 'İsimsiz Firma';
+
+                // DOĞRU EŞLEŞTİRME: tableId olanları Comp haritasından, profileId olanları Prof haritasından çek
+                const currentOperators  = (tableId ? (opMapComp[tableId] || 0) : 0) + (opMapProf[profileId] || 0);
+                const currentCustomers  = (tableId ? (custMapComp[tableId] || 0) : 0) + (custMapProf[profileId] || 0);
+                const currentBranches   = (tableId ? (branchMapComp[tableId] || 0) : 0) + (branchMapProf[profileId] || 0);
+                const currentWarehouses = (tableId ? (whMapComp[tableId] || 0) : 0) + (whMapProf[profileId] || 0);
 
                 return {
                     subId: s.id,
-                    companyProfileId: ownerId,
-                    companyName: owner?.company_name || companyRow?.name || owner?.full_name || 'İsimsiz Firma',
+                    companyProfileId: profileId || '',
+                    companyName: finalCompanyName,
                     email: owner?.email || '—',
                     status: s.status,
                     trialEndsAt: s.trial_ends_at,
@@ -219,9 +211,9 @@ export default function AdminLimitsPage() {
                     maxCustomers: effectiveCust,
                     maxBranches: effectiveBranch,
                     maxWarehouses: effectiveWh,
-                    overrideOperators:  s.max_operators?.toString()  || '',
-                    overrideCustomers:  s.max_customers?.toString()  || '',
-                    overrideBranches:   s.max_branches?.toString()   || '',
+                    overrideOperators: s.max_operators?.toString() || '',
+                    overrideCustomers: s.max_customers?.toString() || '',
+                    overrideBranches: s.max_branches?.toString() || '',
                     overrideWarehouses: s.max_warehouses?.toString() || '',
                     currentOperators,
                     currentCustomers,
@@ -229,8 +221,6 @@ export default function AdminLimitsPage() {
                     currentWarehouses,
                 };
             });
-
-
 
             setCompanies(result);
         } catch (e: any) {
